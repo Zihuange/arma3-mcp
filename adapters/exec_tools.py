@@ -149,7 +149,8 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
         """
         from knowledge.expr import ExprError, validate, whitelist_from_library
         try:
-            validate(expr, argc, whitelist_from_library(), args=argv)
+            validate(expr, argc, whitelist_from_library(), args=argv,
+                     unrestricted=gu.unrestricted)
         except ExprError as exc:
             # call 被拦时补一句上下文：它需要单独的闸门，而不是"表达式写错了"，
             # 否则使用者会反复改表达式，而问题其实在开关上。
@@ -163,7 +164,7 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
                 "表达式里每个标识符必须是 _p0.._pN 占位符，或白名单内的引擎命令；"
                 "禁止分号（多语句）与字符串字面量（参数必须是数据）。%s"
                 % (exc, extra))
-        if "call" in expr.lower() and not gu.engine_call:
+        if "call" in expr.lower() and not gu.engine_call and not gu.unrestricted:
             return ToolResult.fail(
                 "表达式用到 call：它是**有条件放行**的一级（参数是函数引用，"
                 "必须逐个核对函数名），当前不会执行。\n"
@@ -203,12 +204,21 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
         #
         # 展开必须在下发前做：SQF 侧拿到的应当是 `(_this select 0) setPosATL _p1`
         # 这种引擎能直接执行的形式。原表达式（含 _pN）仍留在审计里，便于对账。
-        reply = chan.send({"cid": cid, "cmd": "exec", "args": [code, args]},
+        # 第 4 项（下标 3）= 跳过游戏侧校验。**只有无门控模式才传 True**：
+        # 那边是纵深防御的第二道（fn_validate.sqf），全开模式下它必须一并让路，
+        # 否则会出现"MCP 放行了、游戏侧又拒"的半开状态——比全关更难排查。
+        reply = chan.send({"cid": cid, "cmd": "exec",
+                           "args": [code, args, [], bool(gu.unrestricted)]},
                           timeout_s=timeout_s)
-        audit("exec", {"cid": reply.cid, "expr": expr, "code": code,
-                       "argc": len(args),
-                       "ok": reply.ok, "elapsed_ms": reply.elapsed_ms,
-                       "channel": reply.channel, "error": reply.error[:200]})
+        entry = {"cid": reply.cid, "expr": expr, "code": code,
+                 "argc": len(args),
+                 "ok": reply.ok, "elapsed_ms": reply.elapsed_ms,
+                 "channel": reply.channel, "error": reply.error[:200]}
+        if gu.unrestricted:
+            # 审计必须能回答"这条是在全开模式下发的吗"——否则事后复盘时
+            # 无法区分"当时被校验过"和"当时谁也没挡"。
+            entry["mode"] = "unrestricted"
+        audit("exec", entry)
 
         caveat = headless_caveat(expr, chan)
 

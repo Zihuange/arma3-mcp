@@ -171,7 +171,7 @@ def fn_list_handler(msg: dict) -> dict:
     args = msg.get("args") or []
     tag = (args[0] if len(args) > 0 and isinstance(args[0], str) else "")
     limit = args[1] if len(args) > 1 and isinstance(args[1], int) else 200
-    all_tags = [["a3mcp", 3], ["BIS", 2]]
+    all_tags = [["a3mcp", 3], ["BIS", 2], ["bis", 1]]
     if not tag:
         return {"ok": True, "result": {
             "functions": [], "total": 5, "tags": all_tags,
@@ -518,7 +518,8 @@ class TestFunctionList(ConfigToolCase):
         text = text_of(self.wait_tool("function_list", {}))
         self.assertIn("CfgFunctions", text)
         self.assertIn("a3mcp", text)
-        self.assertIn("BIS", text)
+        # tag 名统一按小写显示（与大小写不敏感的查询行为一致，见合并逻辑）
+        self.assertIn("bis", text.lower())
 
     def test_tag_lists_function_names(self):
         self.connect_game()
@@ -537,6 +538,44 @@ class TestFunctionList(ConfigToolCase):
         self.connect_game()
         text = text_of(self.wait_tool("function_list", {"tag": "no_such_tag"}))
         self.assertIn("没有这个 tag", text)
+
+    def test_overview_is_sorted_by_count(self):
+        """概览按函数数降序——目的是"哪个 tag 值得看"，不是字母表顺序。"""
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {}))
+        # 假游戏数据：a3mcp=3、BIS(2)+bis(1) 合并为 3
+        # → 同数时按名字升序，a3mcp 在前
+        self.assertLess(text.index("a3mcp"), text.index("bis"),
+                        "概览应按函数数降序排列")
+
+    def test_same_tag_different_case_is_merged(self):
+        """大小写不同的同名 tag 要合并显示。
+
+        实测：config 里 `BIS`(1733) 与 `bis`(24) 并存，而查询是大小写不敏感的
+        （`tag=bis` 得 1757）。概览若分开显示，就会与"查这个 tag 能得多少"对不上。
+        假游戏数据里 BIS=2、bis=1 → 合并后应为 3，且只出现一行。
+        """
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {}))
+        self.assertEqual(text.lower().count("bis"), 1,
+                         "同名不同大小写的 tag 应合并成一行：\n" + text)
+        self.assertIn("3 个", text)
+
+    def test_declared_tag_count_matches_listed_lines(self):
+        """标题里的个数必须等于实际列出的行数。
+
+        曾经标题用游戏侧给的条目数、列表用合并后的结果 → "分布在 10 个 tag："
+        下面只有 9 行。这类"数字与内容对不上"细看才发现，所以固化成断言。
+        """
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {}))
+        head = [ln for ln in text.splitlines() if "分布在" in ln][0]
+        declared = int(head.split("分布在")[1].split("个")[0].strip())
+        listed = len([ln for ln in text.splitlines()
+                      if ln.startswith("  ") and "个" in ln])
+        self.assertEqual(declared, listed,
+                         "标题说 %d 个 tag，实际列了 %d 行：\n%s"
+                         % (declared, listed, text))
 
     def test_cmd_name_matches_sqf_dispatch(self):
         """下行 cmd 名必须与 fn_exec.sqf 的 case 对上（那边 toLower 后比较）。"""

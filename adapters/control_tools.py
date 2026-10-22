@@ -20,6 +20,7 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
         snap = gu.snapshot()
         info = chan.info()
         zh = {
+            "unrestricted": "⚠ 无门控模式（所有命令放行，含硬禁与 CALL_DENY）",
             "engine_read": "只读查询", "engine_write": "改变游戏世界",
             "engine_exotic": "凭空生成资源/网络协调/调试后门",
             "engine_call": "call（有条件放行：目标函数名还要过 CALL_DENY）",
@@ -28,6 +29,11 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
             "allow_cheat": "调试/作弊命令",
         }
         lines = ["闸门状态（true=放行）："]
+        # 全开必须**醒目**且出现在最前：这是"现在什么模式"的唯一可见入口，
+        # 埋在一堆 ✓ 里等于没有。
+        if snap.get("unrestricted"):
+            lines.append("  ⚠⚠ 无门控模式已开启 —— 硬禁命令、CALL_DENY、表达式白名单"
+                         "全部不再生效。审计里每次调用都会带 mode=unrestricted。")
         for key, label in zh.items():
             if key in snap:
                 lines.append(f"  {'✓' if snap[key] else '✗'} {key:22s} {label}")

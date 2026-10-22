@@ -302,3 +302,61 @@ class TestAudit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestUnrestrictedMode(unittest.TestCase):
+    """无门控模式：放开全部执行门控（用户要求"让 LLM 完全接管"）。
+
+    这条分支**推翻了**本文件开头"硬禁永远拒绝"的规则，所以测试要同时钉住两件事：
+      1. 开启后确实全放行（否则用户拿到的是"半开"，比全关更难排查）；
+      2. **默认路径一丝不变**（回归）—— 绝不能因为加了开关而让默认变松。
+    """
+
+    @staticmethod
+    def _all_on():
+        return Gates.from_env({"A3MCP_PROFILE": "unrestricted"})
+
+    def test_off_by_default(self):
+        for env in ({}, {"A3MCP_PROFILE": "debug"}, {"A3MCP_PROFILE": ""}):
+            self.assertFalse(Gates.from_env(env).unrestricted, env)
+
+    def test_enabled_by_profile_or_flag(self):
+        self.assertTrue(Gates.from_env({"A3MCP_PROFILE": "unrestricted"}).unrestricted)
+        self.assertTrue(Gates.from_env({"A3MCP_UNRESTRICTED": "1"}).unrestricted)
+        self.assertTrue(Gates.from_env({"A3MCP_UNRESTRICTED": "yes"}).unrestricted)
+
+    def test_hard_ban_is_open(self):
+        """全开模式下**硬禁也放行** —— 这是本模式的全部意义。"""
+        g = self._all_on()
+        for cmd in ("compile", "spawn", "execVM", "callExtension", "remoteExec",
+                    "BIS_fnc_execVM", "BIS_fnc_MP", "call"):
+            v = g.check(cmd)
+            self.assertTrue(v.allowed, cmd)
+            self.assertEqual(v.level, "unrestricted", cmd)
+
+    def test_side_gates_default_on(self):
+        """半开状态最让人困惑，所以输入注入/作弊开关也跟着打开。"""
+        g = self._all_on()
+        self.assertTrue(g.input_inject)
+        self.assertTrue(g.allow_cheat)
+        self.assertTrue(g.engine_exotic)
+        self.assertTrue(g.engine_call)
+
+    def test_explicit_zero_still_wins(self):
+        """显式设 0 仍能单独关掉某一项（全开≠不可控）。"""
+        g = Gates.from_env({"A3MCP_PROFILE": "unrestricted",
+                            "A3MCP_INPUT_INJECT": "0"})
+        self.assertFalse(g.input_inject)
+        self.assertTrue(g.unrestricted)
+
+    def test_snapshot_reports_mode(self):
+        self.assertTrue(self._all_on().snapshot().get("unrestricted"))
+        self.assertFalse(Gates.from_env({}).snapshot().get("unrestricted"))
+
+    def test_default_path_unchanged(self):
+        """回归：默认配置下硬禁仍是硬禁。"""
+        g = Gates.from_env({})
+        for cmd in ("compile", "spawn", "execVM", "callExtension", "remoteExec"):
+            self.assertFalse(g.check(cmd).allowed, cmd)
+        self.assertFalse(g.input_inject)
+        self.assertFalse(g.allow_cheat)

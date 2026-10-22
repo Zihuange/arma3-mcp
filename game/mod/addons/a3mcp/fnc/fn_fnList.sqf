@@ -43,7 +43,10 @@ private _limit = _args param [1, 200, [0]];
 
 private _funcs = [];
 private _total = 0;
-private _tags = [];
+// ⚠ 必须按 tag **聚合**，不能按"顶层类"逐条记：多个顶层类的 tag 会**同名**
+// （实测：A3 / A2PMC / A3_Modules … 的 tag 全是 "BIS"），逐条记的概览里会出现
+// 十几个都叫 "BIS" 的条目，看起来像重复数据，实际是同一 tag 的不同分类树。
+private _tagCounts = createHashMap;
 private _truncated = false;
 
 // 一次遍历同时完成"计数"与"收集"：这个函数会被反复调用，别扫两遍。
@@ -72,9 +75,14 @@ private _truncated = false;
             } forEach ("true" configClasses _catCfg);
         } forEach ("true" configClasses _tagCfg);
         _total = _total + _count;
-        _tags pushBack [_tagName, _count];
+        _tagCounts set [_tagName,
+            (_tagCounts getOrDefault [_tagName, 0]) + _count];
     };
 } forEach ("true" configClasses (configFile >> "CfgFunctions"));
+
+// 转成 [[tag, count], ...] 供序列化；顺序由 MCP 侧排序（SQF 的 sort 不支持嵌套数组）
+private _tags = [];
+{ _tags pushBack [_x, _tagCounts get _x]; } forEach (keys _tagCounts);
 
 private _payload = createHashMapFromArray [
     ["functions", _funcs],

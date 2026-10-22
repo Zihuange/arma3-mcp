@@ -17,7 +17,7 @@ rem holding this file, trailing backslash included), so moving or renaming the
 rem repo needs no edit here. GAME and WS above still have to be edited by hand:
 rem where Steam put Arma 3 cannot be derived from anything in this repo.
 set "MODDIR=%~dp0game\mod"
-set "MODS=%WS%\@Enhanced Movement;%WS%\@CBA_A3;%WS%\@Achilles;%MODDIR%"
+set "MODS=%WS%\@Enhanced Movement;%WS%\@CBA_A3;%WS%\@Achilles;%WS%\@ace;%MODDIR%"
 
 if not exist "%GAME%" (
   echo [x] Game not found: %GAME%

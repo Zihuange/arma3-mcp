@@ -86,7 +86,7 @@ constexpr char kVersion[] = "0.1.0";
 struct Config {
     // 默认目标：本机回环（MCP 与游戏同机时不需要任何额外配置）
     std::string host = "127.0.0.1";
-    std::string port = "32131";
+    std::string port = "32132";
     std::string token = "arma3-mcp-local";
 
     std::string addr() const { return host + ":" + port; }

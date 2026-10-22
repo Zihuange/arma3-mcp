@@ -18,7 +18,7 @@ Why (5) matters: "the TCP link is up" and "something in the game will execute
 commands" are different facts, and the main menu is the normal case where the
 first is true and the second is not. The heartbeat is what separates them.
 
-NOTE: loading the DLL makes it dial 127.0.0.1:32131 by default, and the real MCP
+NOTE: loading the DLL makes it dial 127.0.0.1:32132 by default, and the real MCP
 server replaces its active connection when a new one arrives -- so a naive run
 would knock the actual game off mid-session. This script therefore loads a copy
 whose default port is rewritten to an unused one; see prepare().
@@ -28,7 +28,7 @@ ASCII only: Windows Python defaults to the ANSI codepage and raises on CJK text.
 import ctypes, json, os, socket, sys, tempfile, threading, time
 
 DLL = sys.argv[1]
-PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 32131
+PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 32132
 
 
 def prepare(dll_path, port):
@@ -43,16 +43,16 @@ def prepare(dll_path, port):
     replacement leaves the binary layout intact.
     """
     want = str(port).encode()
-    if want == b"32131":
+    if want == b"32132":
         return dll_path
     data = open(dll_path, "rb").read()
-    if data.count(b"32131") != 1:
+    if data.count(b"32132") != 1:
         raise SystemExit("expected exactly 1 default-port literal, found %d"
-                         % data.count(b"32131"))
+                         % data.count(b"32132"))
     out = os.path.join(tempfile.gettempdir(),
                        "a3mcp_smoke_%s.dll" % want.decode())
     with open(out, "wb") as fh:
-        fh.write(data.replace(b"32131", want))
+        fh.write(data.replace(b"32132", want))
     return out
 
 got_hello = []

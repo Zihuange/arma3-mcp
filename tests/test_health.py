@@ -48,7 +48,7 @@ def free_port() -> int:
 def status_handler(poll_ms_ago: object = 120, **extra) -> object:  # noqa: ANN003
     """造一个 status 处理器。传 poll_ms_ago=None 表示**不带该字段**（旧版 DLL）。"""
     payload: dict = {
-        "ok": True, "connected": True, "addr": "127.0.0.1:32131",
+        "ok": True, "connected": True, "addr": "127.0.0.1:32132",
         "ver": "0.1.0", "inbox": 0, "outbox": 0, "dropped": 0,
         "rx": 10, "tx": 9, "connects": 1, "error": "",
     }

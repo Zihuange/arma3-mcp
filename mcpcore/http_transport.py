@@ -161,6 +161,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, response)
 
 
+class _SingleInstanceHTTPServer(ThreadingHTTPServer):
+    """显式禁止地址重用 —— 这是 Windows 上的关键设置。
+
+    `socketserver.TCPServer` 默认 `allow_reuse_address = 1`，而这个选项在
+    **Windows 上的语义与 Unix 不同**：Unix 只允许绑定处于 TIME_WAIT 的端口，
+    Windows 却允许**完全重复绑定**同一地址端口。
+
+    后果实测过（2026-10-09）：反复启动 MCP 会留下多个实例，它们**同时**绑着
+    `0.0.0.0:32128`，请求被不同实例接走 —— 于是状态报告自相矛盾：
+    一个说 `tcp／已接通`，另一个说 `null／未接通`，而**每个响应单独看都自洽**，
+    所以极难定位（我为此绕了很久，还一度误判成端口被 wslrelay 占用）。
+
+    关掉它之后，第二个实例会在 bind 阶段直接失败，`serve_http` 会打印
+    "监听失败：端口被占用"并返回 2 —— 这正是"只允许一个 MCP"该有的行为：
+    失败得响亮，而不是两个实例各说各话。
+    """
+
+    allow_reuse_address = False
+
+
 def build_http_server(server: Server, host: str, port: int,
                       session_id: str = "arma3-mcp",
                       quiet: bool = True) -> ThreadingHTTPServer:
@@ -170,7 +190,7 @@ def build_http_server(server: Server, host: str, port: int,
         "shared_session_id": session_id,
         "quiet": quiet,
     })
-    httpd = ThreadingHTTPServer((host, port), handler)
+    httpd = _SingleInstanceHTTPServer((host, port), handler)
     httpd.daemon_threads = True
     return httpd
 

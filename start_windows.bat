@@ -25,12 +25,12 @@ rem works -- gates_status just says "not connected" with no obvious cause. Both 
 rem are therefore defaulted here (the repo's own launcher should not need the
 rem user to know them):
 rem   A3MCP_CHANNEL=tcp   -- listen for the game's DLL to connect
-rem   A3MCP_TCP_PORT=32131 -- MUST match the DLL's default (armA3_mcp_extension.cpp:
-rem                           std::string port = "32131"); a mismatch fails silently
+rem   A3MCP_TCP_PORT=32132 -- MUST match the DLL's default (armA3_mcp_extension.cpp:
+rem                           std::string port = "32132"); a mismatch fails silently
 rem                           from the game side
 rem Pre-set either variable to override (if not defined keeps your value).
 if not defined A3MCP_CHANNEL set "A3MCP_CHANNEL=tcp"
-if not defined A3MCP_TCP_PORT set "A3MCP_TCP_PORT=32131"
+if not defined A3MCP_TCP_PORT set "A3MCP_TCP_PORT=32132"
 
 rem Python: PY_FALLBACK first (this machine's Anaconda install -- the one the
 rem rest of this repo uses), then whatever "python" is on PATH. Order matters:

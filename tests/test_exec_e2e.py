@@ -16,6 +16,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -166,6 +167,16 @@ class TestConnectedFlow(ExecE2ECase):
                          "(_this select 0) setPosATL (_this select 1)")
         # 参数以数据原样下发，不被展开逻辑碰到
         self.assertEqual(game.commands[-1]["args"][1], [["u_17"], [1, 2, 3]])
+
+    def test_skip_validate_flag_is_false_by_default(self):
+        """回归：默认模式下第 4 项必须是 False（否则等于默认放开了游戏侧那道防线）。"""
+        game = self.connect_game()
+        game.handlers["exec"] = lambda m: {"ok": True, "result": None}
+        self.wait_tool("exec", {"expr": "getPos _p0", "args": [["u_1"]]})
+        sent = game.wait_for_cmd("exec")
+        self.assertIsNotNone(sent)
+        self.assertEqual(sent["args"][3], False,
+                         "默认模式必须让游戏侧保留校验")
 
     def test_exec_dry_run_does_not_reach_game(self):
         game = self.connect_game()
@@ -395,3 +406,60 @@ class TestDisconnectedFlow(ExecE2ECase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestUnrestrictedE2E(ExecE2ECase):
+    """无门控模式的执行闭环（A3MCP_PROFILE=unrestricted）。
+
+    要验的是三件事，缺一条这个模式就不可用于"出了事能查"：
+      1. 默认会被拒的表达式（字符串字面量 + 硬禁命令）真能下发；
+      2. 下发给游戏侧的 payload 带 skipValidate=True（否则游戏中还有一道防线，
+         表现为"MCP 放行了但游戏侧又拒"的半开状态）；
+      3. 审计里带 mode=unrestricted（事后区分"被校验过"和"谁也没挡"）。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.audit_path = os.path.join(tempfile.gettempdir(),
+                                       "a3mcp_audit_unrestricted.jsonl")
+        if os.path.exists(self.audit_path):
+            os.unlink(self.audit_path)
+        self.env = dict(self.env, A3MCP_PROFILE="unrestricted",
+                        A3MCP_AUDIT_LOG=self.audit_path)
+        self.srv.close()
+        self.srv = McpServer(self.env)
+        self.srv.request("initialize", {"protocolVersion": "2024-11-05"})
+        self.srv.notify("notifications/initialized")
+
+    def test_hard_ban_expression_reaches_game(self):
+        game = self.connect_game()
+        game.handlers["exec"] = lambda m: {"ok": True, "result": {"ran": True}}
+        result = self.wait_tool("exec", {"expr": 'compile "systemChat 1"'})
+        text = text_of(result)
+        self.assertFalse(result["isError"], text)
+        sent = game.wait_for_cmd("exec")
+        self.assertIsNotNone(sent, "exec 命令应当已下发；收到：%r"
+                             % [c.get("cmd") for c in game.commands])
+        self.assertEqual(sent["args"][3], True,
+                         "全开模式必须让游戏侧也跳过校验")
+
+    def test_semicolon_and_arbitrary_command_pass(self):
+        game = self.connect_game()
+        game.handlers["exec"] = lambda m: {"ok": True, "result": 1}
+        for expr in ("_p0 doMove _p1; _p0 setDamage 1", "zzzNotACommand _p0"):
+            result = self.wait_tool("exec", {"expr": expr, "args": [["u_1"], [1]]})
+            self.assertFalse(result["isError"], text_of(result))
+
+    def test_audit_records_unrestricted_mode(self):
+        game = self.connect_game()
+        game.handlers["exec"] = lambda m: {"ok": True, "result": None}
+        self.wait_tool("exec", {"expr": "worldName"})
+        time.sleep(0.3)
+        rows = []
+        if os.path.exists(self.audit_path):
+            with open(self.audit_path, encoding="utf-8") as fh:
+                rows = [json.loads(ln) for ln in fh if ln.strip()]
+        exec_rows = [r for r in rows if r.get("tool") == "exec"]
+        self.assertTrue(exec_rows, "应当有 exec 审计记录")
+        self.assertEqual(exec_rows[-1].get("mode"), "unrestricted",
+                         "全开模式的审计必须标记 mode，否则事后无法区分")

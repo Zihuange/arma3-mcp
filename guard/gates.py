@@ -195,6 +195,15 @@ class Gates:
     engine_write: bool = True
     engine_exotic: bool = False
     engine_call: bool = False
+    # 无门控模式：所有命令放行，包括硬禁与 CALL_DENY。
+    #
+    # 它推翻了本文件开头那条"硬禁永远拒绝"的规则，所以必须**显式开启**
+    # （A3MCP_PROFILE=unrestricted 或 A3MCP_UNRESTRICTED=1），默认永远是关。
+    #
+    # 为什么仍然保留这个开关而不是删掉检查：删掉之后"现在是什么模式"就不再可观测——
+    # 出问题时无法从 gates_status / 审计里判断"当时是全开的"。开关留着，
+    # 每次调用都能在审计里带上 mode=unrestricted，那才是"副作用自行处理"的前提。
+    unrestricted: bool = False
     ui_control: bool = True
     input_inject: bool = False
     input_foreground_only: bool = True
@@ -218,21 +227,33 @@ class Gates:
         # 刻意不含 engine_write / input_inject —— 那两个改变了"会不会动到世界"
         # 的性质，而 debug 的本意是"能查能调"，不是"放手改"。
         debug = profile == "debug"
+        # 无门控模式：profile=unrestricted，或直接 A3MCP_UNRESTRICTED=1。
+        # 它连带把各闸门的**默认值**也打开（否则会出现"命令放行、但输入注入仍关"
+        # 这种半开状态，用起来只会困惑）；显式设 0 仍可单独关掉某一项。
+        unrestricted = (profile == "unrestricted"
+                        or flag("A3MCP_UNRESTRICTED", False))
         return cls(
+            unrestricted=unrestricted,
             engine_read=flag("A3MCP_ENGINE_READ", True),
             engine_write=flag("A3MCP_ENGINE_WRITE", True),
-            engine_exotic=flag("A3MCP_ENGINE_EXOTIC", debug),
-            engine_call=flag("A3MCP_ENGINE_CALL", debug),
+            engine_exotic=flag("A3MCP_ENGINE_EXOTIC", debug or unrestricted),
+            engine_call=flag("A3MCP_ENGINE_CALL", debug or unrestricted),
             ui_control=flag("A3MCP_UI_CONTROL", True),
-            input_inject=flag("A3MCP_INPUT_INJECT", False),
+            input_inject=flag("A3MCP_INPUT_INJECT", unrestricted),
             input_foreground_only=flag("A3MCP_INPUT_FOREGROUND_ONLY", True),
             allow_input_text=flag("A3MCP_INPUT_TEXT", True),
-            allow_cheat=flag("A3MCP_ALLOW_CHEAT", False),
+            allow_cheat=flag("A3MCP_ALLOW_CHEAT", unrestricted),
             overrides={x.strip().lower() for x in extra.split(",") if x.strip()},
         )
 
     def check(self, name: str) -> Verdict:
         n = _norm(name)
+        # 无门控模式：**最前面**短路，连 CALL_DENY 与硬禁一起放行。
+        # 放在最前是有意的：任何一条更早的判定都会让"全开"变成"部分开"，
+        # 而半开的门控比全关更难排查（用户以为开了，实际某类命令仍被拒）。
+        if self.unrestricted:
+            return Verdict(True, "unrestricted",
+                           reason="无门控模式（A3MCP_PROFILE=unrestricted）：所有命令放行")
         level = classify(n)
         if n in self.overrides and level not in ("forbidden", "call_gated"):
             # 显式放行只对"非硬禁"有效——硬禁没有例外，这是刻意的。
@@ -277,6 +298,7 @@ class Gates:
             "engine_write": self.engine_write,
             "engine_exotic": self.engine_exotic,
             "engine_call": self.engine_call,
+            "unrestricted": self.unrestricted,
             "ui_control": self.ui_control,
             "input_inject": self.input_inject,
             "input_foreground_only": self.input_foreground_only,

@@ -55,8 +55,21 @@ private _argc = count _argValues;
 //
 // 第 4 个参数（实参表）必须传：`call` 的目标函数名在**数据**里，不看数据就
 // 无法核对它。这是本框架里唯一一处"命令名之外还要看值"的判定。
-private _v = [_expr, _argc, _whitelist, _argValues] call a3mcp_fnc_validate;
-if !(_v select 0) exitWith {
+//
+// 第 5 个参数（`_args` 下标 3）= **跳过校验**。只有 MCP 以无门控模式
+// （A3MCP_PROFILE=unrestricted）启动时才会传 true —— 那种模式下这道防线
+// 必须一并让路，否则会出现"MCP 放行了、游戏侧又拒"的半开状态，
+// 比全关更难排查。
+//
+// ⚠ 结构上必须把"是否跳过"与"是否失败"拆成两条**顶层** if：
+// `exitWith` 退出的是**当前代码块**，写进 `then { … exitWith … }` 里只会退出
+// 那个块、函数照样往下走 —— 校验会静默失效（这个坑本仓库踩过，见 D38）。
+private _skipValidate = _args param [3, false, [true]];
+private _v = [true, "", []];
+if (!_skipValidate) then {
+    _v = [_expr, _argc, _whitelist, _argValues] call a3mcp_fnc_validate;
+};
+if (!_skipValidate && { !(_v select 0) }) exitWith {
     [_cid, _expr, format ["表达式校验未通过：%1", _v select 2]] call _fail
 };
 

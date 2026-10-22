@@ -210,13 +210,35 @@ def check_call_target(fn_name) -> None:
             % (fn_name, why))
 
 
+# 无门控模式下的长度上限。默认路径是 400（单表达式够用）；全开时必须放宽，
+# 否则"让 LLM 接管"会被一条字符数限制卡住。8000 足够写几十行 SQF，
+# 又留了一道防呆（避免把几 MB 的东西塞进 downlink）。
+UNRESTRICTED_MAX_LEN = 8000
+
+
 def validate(expr: str, arg_count: int, whitelist: set[str] | None = None,
-             index=None, args: list | None = None) -> dict:
+             index=None, args: list | None = None,
+             unrestricted: bool = False) -> dict:
     """校验表达式。通过返回 {'ok': True, 'names': [...]}，否则抛 ExprError。
 
     args 是可选的**实参**。给了它就额外校验 `call` 的目标函数名——那是本框架里
     唯一"命令名之外还需要看值"的判定，光看表达式文本看不出来（目标在数据里）。
+
+    unrestricted=True 时**跳过全部校验**（白名单、永久禁区、字符串字面量、
+    分号、占位符越界），只留"非空 + 长度上限"。这条分支等于把 `exec` 变成
+    "任意 SQF 代码执行"——它由 `A3MCP_PROFILE=unrestricted` 显式开启，
+    默认永远走不到。之所以保留这个参数而不是删掉检查，见 guard/gates.py 里
+    `unrestricted` 字段的注释：**模式必须可观测**（审计要能标记它）。
     """
+    if unrestricted:
+        if not isinstance(expr, str) or not expr.strip():
+            raise ExprError("表达式为空")
+        if len(expr) > UNRESTRICTED_MAX_LEN:
+            raise ExprError("表达式过长（无门控模式上限 %d 字符）"
+                            % UNRESTRICTED_MAX_LEN)
+        return {"ok": True, "commands": [], "placeholders": [], "names": [],
+                "unrestricted": True}
+
     if not isinstance(expr, str) or not expr.strip():
         raise ExprError("表达式为空")
     if len(expr) > 400:

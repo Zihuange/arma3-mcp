@@ -12,7 +12,7 @@ rem
 rem Keep this file pure ASCII and CRLF (cmd.exe reads .bat as OEM codepage).
 rem
 rem BEFORE RUNNING: the server's DLL dials the same MCP game port as the client
-rem (32131), and the MCP server keeps only ONE active connection -- starting this
+rem (32132), and the MCP server keeps only ONE active connection -- starting this
 rem will knock a running client off.
 
 setlocal

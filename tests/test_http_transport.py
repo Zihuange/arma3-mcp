@@ -249,3 +249,34 @@ class TestConcurrency(HttpCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSingleInstanceGuard(unittest.TestCase):
+    """只允许一个 MCP 实例绑同一端口。
+
+    背景（实测踩到）：`socketserver.TCPServer` 默认 `allow_reuse_address = 1`，
+    而这个选项在 **Windows 上允许完全重复绑定**同一地址端口 —— 于是反复启动
+    MCP 会留下多个实例同时绑着 `0.0.0.0:32128`，请求被不同实例接走，
+    状态报告互相矛盾（一个报 tcp/已接通、另一个报 null/未接通），
+    而每个响应单看都自洽，排查代价极高。
+    """
+
+    def test_server_disallows_address_reuse(self):
+        from mcpcore.http_transport import build_http_server
+        srv = build_http_server(None, "127.0.0.1", 0)
+        try:
+            self.assertFalse(srv.allow_reuse_address,
+                             "必须关掉地址重用，否则 Windows 上会多实例共存")
+        finally:
+            srv.server_close()
+
+    def test_second_bind_on_same_port_fails(self):
+        """真正的判据：第二个实例要**绑不上**，而不是悄悄共存。"""
+        from mcpcore.http_transport import build_http_server
+        first = build_http_server(None, "127.0.0.1", 0)
+        port = first.server_address[1]
+        try:
+            with self.assertRaises(OSError):
+                build_http_server(None, "127.0.0.1", port)
+        finally:
+            first.server_close()

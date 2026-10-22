@@ -77,7 +77,8 @@ cd /tmp && env -i A3MCP_ENGINE_WRITE=1 /usr/bin/python3 -m servers.engine  # 需
 | `A3MCP_ENGINE_WRITE` | `1` | 改变游戏世界 |
 | `A3MCP_ENGINE_EXOTIC` | `0` | 生成资源 / 网络协调 / 调试后门 |
 | `A3MCP_ENGINE_CALL` | `0` | `call`（有条件放行：目标函数名仍要过 `CALL_DENY`） |
-| `A3MCP_PROFILE` | 空 | 设成 `debug` 时**只**打开 `EXOTIC` 与 `ENGINE_CALL` 的默认值；不动写闸门与输入注入，也解不开硬禁 |
+| `A3MCP_PROFILE` | 空 | `debug` = 只打开 `EXOTIC` 与 `ENGINE_CALL` 的默认值（不动写闸门与输入注入，解不开硬禁）；**`unrestricted` = 无门控模式**，所有命令与校验全部放开，见 [safety.md](safety.md) |
+| `A3MCP_UNRESTRICTED` | `0` | `1` 等价于 `A3MCP_PROFILE=unrestricted`（更直白的写法）。**它会让硬禁命令、CALL_DENY、表达式白名单全部失效**，且审计会标记 `mode=unrestricted` |
 | `A3MCP_ALLOW_CHEAT` | `0` | 调试类命令（`attrit` 等）单独开关 |
 | `A3MCP_ALLOW_COMMANDS` | 空 | 显式放行的命令名（逗号分隔，**解不开硬禁，也放不开 `call`**） |
 | `A3MCP_UI_CONTROL` | `1` | UI 控件操作 |

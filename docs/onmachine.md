@@ -1,5 +1,12 @@
 # 上机清单（游戏侧联调）
 
+> ⚠ **2026-10-18 端口变更**：游戏连接通道的默认端口已由 `32131` 改为 **`32132`**
+> （原 32131 被 `mcp-rimworld-bridge` 经 `wslrelay.exe` 占用，会导致本通道静默退回 `null`）。
+> 已同步修改并重新编译：`game/extension/src/arma3_mcp_extension.cpp` 默认值、`start_windows.bat`、
+> `serve_http.py --game-port`、`tools/dll_smoke.py`（DLL 冒烟测试 6/6 通过）。
+> **下文凡以 `32131` 表述「当前默认端口」之处，请读作 `32132`**；
+> 历史实测与决策记录（本文件第 57-58 行、`decisions.md`）保留原样，未作篡改。
+
 当前状态：**模组与 DLL 均已就绪，并通过离线验证**（见下）。以下按顺序做，
 每步都有判据——通过了再进下一步。
 
@@ -222,12 +229,27 @@ game/mod/
 |---|---|
 | DLL 一直连不上 | MCP 是否在跑、端口是否被占；DLL 的 `configure` 地址是否对；Windows 防火墙对本机回环一般无影响，但若改过策略需放行 |
 | 执行器没启动 | RPT 里有没有 `[A3MCP]` 字样；模组是否真的加载（`CfgPatches` 里应有 `a3mcp`） |
-| 工具报「未接通」 | 先看 `gates_status` 的**通道**是 `tcp` 还是 `null`：`null` = 端口没开起来（见第 0 节的占用排查，含 `wslrelay` 残留）；`tcp` 但未接通 = 游戏侧没连上来 |
+| 工具报「未接通」 | 先看 `gates_status` 的**通道**是 `tcp` 还是 `null`：`null` = 端口没开起来（见第 0 节的占用排查）；`tcp` 但未接通 = 游戏侧没连上来 |
+| **状态自相矛盾**（一会儿 `tcp／已接通`、一会儿 `null／未接通`） | 几乎一定是**跑着多个 MCP 实例**。旧代码用标准库默认的 `allow_reuse_address=1`，而**Windows 上这个选项允许完全重复绑定**同一地址端口 —— 多个实例同时绑 `0.0.0.0:32128`，请求被不同实例接走。**每个响应单独看都自洽**，所以极难察觉。诊断：数 `serve_http` 进程个数（见下）。已修：现在显式 `allow_reuse_address = False`，第二个实例会在 bind 阶段直接失败并打印"监听失败：端口被占用" |
 | 命令发出去没回执 | `game_events` 看有没有 `evt:cmd_error`；RPT 里搜 `[A3MCP][ERR]` |
 | 表达式被拒 | 回执里会带原因（白名单外标识符 / 含分号 / 占位符越界），按原因改调用 |
 | PBO 加载了但函数不存在 | 用 `tools/pbo_verify.py` 复核 PBO 是否含 config.bin 与全部 .sqf |
 
 ---
+
+### 排查"多实例"的具体命令
+
+```bash
+PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
+# 有几个 MCP 实例（应恒为 1）
+$PS -NoProfile -Command '@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*serve_http*" }).Count'
+# 谁绑着端口
+$PS -NoProfile -Command 'Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 32128,32131 } | Select-Object LocalAddress,LocalPort,OwningProcess'
+```
+
+⚠ 清理时**不能只按"32128 的 owner"找**：多实例共存时，端口查询只返回其中一个，
+按它杀会漏掉其余实例（我就这样漏杀了旧的，结果一直连的是那个 `null` 通道的实例）。
+判据用"进程数是否为 1"。
 
 ## 已知的、尚未验证的部分
 

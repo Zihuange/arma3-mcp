@@ -484,15 +484,28 @@ def register(reg: Registry, chan: Channel, tools: ConfigTools) -> None:
             if not funcs:
                 lines.append("  （没有这个 tag。不带 tag 调用可看全部 tag。）")
         else:
-            lines.append("CfgFunctions 里共 %d 个函数，分布在 %d 个 tag："
-                         % (total, len(tags)))
-            lines.append("")
+            # ⚠ 必须按**小写**合并后再显示。
+            #
+            # 游戏侧是按"顶层类"逐条给原始 tag 值的，而 config 里同一个 tag 存在
+            # 大小写不同的写法（实测：`BIS` 1733 与 `bis` 24 并存）。查询侧是
+            # 大小写不敏感的（`tag=bis` 会同时命中两者 → 1757），所以概览若按原样
+            # 分开显示，就会和"查这个 tag 到底能得多少"对不上——那正是最容易让人
+            # 以为"数字是错的"的地方。
+            merged = {}
             for item in tags:
-                # 游戏侧给的是 [tagName, count] 二元组
                 if isinstance(item, (list, tuple)) and len(item) >= 2:
-                    lines.append("  %-24s %s 个" % (item[0], item[1]))
-                else:
-                    lines.append("  %s" % (item,))
+                    key = str(item[0]).lower()
+                    merged[key] = merged.get(key, 0) + (item[1] or 0)
+            # ⚠ 标题里的个数要用**合并后**的数量。曾经用游戏侧给的条目数，
+            # 于是出现"分布在 10 个 tag："下面只列了 9 行——数字与内容对不上，
+            # 是那种"看起来没错、细看才发现"的错。
+            lines.append("CfgFunctions 里共 %d 个函数，分布在 %d 个 tag："
+                         % (total, len(merged)))
+            lines.append("")
+            # 按函数数降序：概览的目的是"哪个 tag 值得看"，不是按字母表
+            for name, count in sorted(merged.items(),
+                                      key=lambda kv: (-kv[1], kv[0])):
+                lines.append("  %-24s %s 个" % (name, count))
             lines.append("")
             lines.append("要列某个 tag 的函数名，带上 tag 参数（如 tag=\"a3mcp\"）——"
                          "那些名字可直接用作 call 的目标。")

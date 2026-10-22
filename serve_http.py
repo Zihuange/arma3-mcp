@@ -88,7 +88,7 @@ def main() -> int:
     ap.add_argument("--host", default="0.0.0.0",
                     help="监听地址。必须是 0.0.0.0，否则 WSL 里的 DSH 连不进来")
     ap.add_argument("--port", type=int, default=32124)
-    ap.add_argument("--game-port", type=int, default=32131,
+    ap.add_argument("--game-port", type=int, default=32132,
                     help="游戏侧扩展 DLL 连入的端口（与 HTTP 同一进程）")
     ap.add_argument("--no-game-channel", action="store_true",
                     help="不开游戏连接端口（只做只读的离线工具时用）")

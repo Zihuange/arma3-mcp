@@ -381,3 +381,49 @@ class TestImplicitVariables(unittest.TestCase):
                      if r["n"].startswith("_")]
         self.assertEqual(offenders, [],
                          "命令库出现了以 `_` 开头的命令名，白名单的放行依据需要重新论证")
+
+
+class TestUnrestrictedExpression(unittest.TestCase):
+    """无门控模式下的表达式校验：**跳过全部检查**，等于"任意 SQF 代码执行"。
+
+    这里同时钉住默认路径（回归）：加了开关绝不能让正常模式变松。
+    """
+
+    def test_default_still_rejects(self):
+        wl = whitelist_from_library()
+        # 注意：`{ _x setDamage 1 } forEach allUnits` **不在**此列 ——
+        # `_x` 已作为引擎隐式变量放行（见 TestImplicitVariables），
+        # 而 forEach/setDamage/allUnits 都在白名单，所以它在默认模式下也合法。
+        for expr, argc in (("_p0 doMove _p1; _p0 setDamage 1", 2),      # 分号
+                           ('compile "systemChat 1"', 0),               # 字符串+硬禁
+                           ("zzzNotACommand _p0", 1),                  # 白名单外
+                           ('_p0 setDamage "1"', 1)):                  # 字符串字面量
+            with self.assertRaises(ExprError, msg=expr):
+                validate(expr, argc, wl)
+            with self.assertRaises(ExprError, msg=expr):
+                validate(expr, argc, wl, unrestricted=False)
+
+    def test_unrestricted_accepts_anything(self):
+        """分号、字符串字面量、任意命令名 —— 全放行（这正是"接管"的含义）。"""
+        for expr in ("_p0 doMove _p1; _p0 setDamage 1",
+                     'compile "systemChat 1"',
+                     "{ _x setDamage 1 } forEach allUnits",
+                     'systemChat "hello"',
+                     "callExtension [\"a\", []]",
+                     "zzzNotACommand _p0"):
+            res = validate(expr, 2, None, unrestricted=True)
+            self.assertTrue(res["ok"], expr)
+            self.assertTrue(res.get("unrestricted"), expr)
+
+    def test_unrestricted_keeps_sanity_checks(self):
+        """只留两条最低要求：非空 + 长度。防呆，不是门控。"""
+        with self.assertRaises(ExprError):
+            validate("", 0, None, unrestricted=True)
+        with self.assertRaises(ExprError):
+            validate("a" * 9000, 0, None, unrestricted=True)
+
+    def test_unrestricted_length_ceiling_is_higher(self):
+        """400 是单表达式上限；全开时要能写几十行代码（实测常需要）。"""
+        validate("a" * 3000, 0, None, unrestricted=True)   # 通过
+        with self.assertRaises(ExprError):
+            validate("a" * 3000, 0, None)                  # 默认仍拒

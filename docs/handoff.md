@@ -38,6 +38,36 @@
 [`engine-traps.md`](engine-traps.md)——那里逐条标注了来源（【库】= 离线命令库可复现，
 【报告】= 外部会话实测、本项目未验证）。查命令行为先看它，别重新踩。
 
+## 零之三、怎么从命令行调 MCP：`tools/mcp_call.py`
+
+**要调 MCP，不一定非得等它出现在你的工具列表里。** 仓库自带一个命令行入口：
+
+```bash
+python3 tools/mcp_call.py --list                      # 列出全部工具及描述
+python3 tools/mcp_call.py gates_status                # 调一条工具
+python3 tools/mcp_call.py exec --args '{"expr": "worldName"}'
+python3 tools/mcp_call.py exec --args '{"expr": "_p0 setPosATL _p1", "args": [["u_17"], [1,2,3]]}'
+python3 tools/mcp_call.py config_tree --args '{"root": "CfgFunctions"}'
+```
+
+**为什么必须知道它**：MCP 工具**可能没注册到当前会话**（外部会话就遇到过），
+而 DSH 的 MCP 客户端**连不上时不报错**——只表现为"工具不存在"，于是人根本不知道
+该去查什么。这个脚本把那层拿掉：一个 POST 进去，结果直接印出来。
+
+它自己处理了两件容易踩的事：
+
+- **地址不写死**：从 `ip route` 取 WSL 网关（写死 IP 会在重启后失效）；
+- **经代理到达 Windows**：`urllib` 会读 `HTTP_PROXY`，而 Node 的 `undici` **默认不读**
+  ——这正是 `wsl_forward.py` 存在的理由。所以同一台机器上"curl/本脚本能通、
+  DSH 客户端超时"是**正常现象**，不是网络坏了。
+
+退出码：`0` 成功 / `1` 工具返回了错误（业务失败，回执照样打印）/ `2` 连不上或协议错。
+
+**批量场景写脚本调它**，不要手工敲几十次工具调用（外部会话导出 99 个班组时
+吃过这个苦头）。`exec_batch` 一次能带 8 条（可提到 32），也优先用它。
+
+---
+
 ## 一、手上的活儿：哪几件已完成、哪件没做
 
 方案：「独立性整改 + 安全模型：把 `call` 从硬禁改为结构化白名单」（已批准）。
@@ -73,6 +103,7 @@ BIS 的函数有几千个，全量倾泻会把回执撑爆。
 
 | 约定 | 说明 |
 |---|---|
+| **`A3MCP_PROFILE=unrestricted` 是"全开"** | 它让硬禁命令 / `CALL_DENY` / 表达式白名单全部失效（`exec` 等于任意 SQF 执行）。**默认关**；开着时 `gates_status` 顶部有 `⚠⚠` 提示、审计每条带 `mode=unrestricted`。排查"为什么这条命令没被拦"时先看它有没有开着 |
 | **环境变量前缀 `A3MCP_*`** | 刚改完。独立性自检会**主动拦截** `ALC_`，写回去会失败 |
 | **`args` 是扁平列表** | `{"args": ["classes"]}` ✓；写成嵌套 `[["classes"]]` 会让 SQF 侧 `param [0, "", [""]]` 拿到数组，报"类型 数组，预期为 字符串" |
 | **`reply.result` 就是负载** | 外面**没有** `{"ok":...}` 包装。`config_tools` 里 `data = reply.result` 直接用；我加过一次多余的 ok 检查，导致 SQF 明明 `ack ok=true`、MCP 侧却报"被拒绝：未知原因" |

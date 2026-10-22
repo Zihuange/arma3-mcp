@@ -158,6 +158,21 @@ class FakeGame:
             time.sleep(0.02)
         return len(self.commands) >= count
 
+    def wait_for_cmd(self, cmd: str, timeout: float = 5.0) -> "dict | None":
+        """等**指定 cmd** 的一条命令到达，返回它；超时返回 None。
+
+        为什么不能只用 `wait_commands(n)`：那个只数条数，而 MCP 侧在 exec 前后
+        会发 status 探测——于是"等到 1 条命令"立刻被探测满足，
+        `commands[-1]` 拿到的根本不是被测的那条（实测踩到，表现为 args 下标越界）。
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            hits = [c for c in self.commands if c.get("cmd") == cmd]
+            if hits:
+                return hits[-1]
+            time.sleep(0.02)
+        return None
+
     def kill(self) -> None:
         """立即断开（不打招呼），验证 MCP 侧的断线处理。"""
         self._stop.set()
