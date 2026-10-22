@@ -1,0 +1,482 @@
+{
+ "schema": 1,
+ "generated": {
+  "builder": "tools/build_capabilities.py",
+  "command_library_records": 5181
+ },
+ "entries": [
+  {
+   "key": "read_input_state",
+   "name": "读取输入设备状态",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "2.08",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "inputMouse",
+     "arma3_since": "2.08"
+    },
+    {
+     "name": "inputAction",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "inputController",
+     "arma3_since": "2.08"
+    },
+    {
+     "name": "userInputDisabled",
+     "arma3_since": "1.60"
+    },
+    {
+     "name": "reversedMouseY",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "只能**读**：inputMouse 返回按键状态、inputAction 返回某个功能是否被按下。没有任何命令可以「按下」某个键。"
+  },
+  {
+   "key": "query_keybinds",
+   "name": "查询键位绑定",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "2.10",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "actionKeys",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "actionKeysEx",
+     "arma3_since": "2.10"
+    },
+    {
+     "name": "keyName",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "keyImage",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "BIS_fnc_keyCode",
+     "arma3_since": "1.00"
+    }
+   ],
+   "note": "用于把「用户动作名」翻译成 DIK 扫描码。将来做输入注入时，扫描码应从 actionKeys 反查，而不是手填常数表。"
+  },
+  {
+   "key": "move_pointer",
+   "name": "移动与读取鼠标指针",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "2.02",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "setMousePosition",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "getMousePosition",
+     "arma3_since": "1.54"
+    },
+    {
+     "name": "ctrlSetMousePosition",
+     "arma3_since": "2.02"
+    },
+    {
+     "name": "ctrlMousePosition",
+     "arma3_since": "2.00"
+    }
+   ],
+   "note": "移动指针不等于点击：不产生任何按键事件。"
+  },
+  {
+   "key": "inject_mouse_click",
+   "name": "注入鼠标点击（按下与抬起）",
+   "engine": "no",
+   "layer": "windows",
+   "since": null,
+   "since_earliest": null,
+   "commands": [],
+   "note": "**引擎内无任何命令可做**——已对全部 5000+ 条命令做过穷举检索，不存在 inject/emulate/press 类命令。只能由 Windows 层（SendInput 或向窗口发消息）实现。"
+  },
+  {
+   "key": "inject_keyboard",
+   "name": "注入键盘按键",
+   "engine": "no",
+   "layer": "windows",
+   "since": null,
+   "since_earliest": null,
+   "commands": [],
+   "note": "同鼠标：引擎无此能力，必须走 Windows 层。"
+  },
+  {
+   "key": "drag_pointer",
+   "name": "拖拽（按住、移动、抬起）",
+   "engine": "no",
+   "layer": "windows",
+   "since": null,
+   "since_earliest": null,
+   "commands": [],
+   "note": "引擎只能移动指针（setMousePosition），按下与抬起都做不到，故拖拽必须由 Windows 层组合实现。地图拖拽、装具拖放都属此类。"
+  },
+  {
+   "key": "activate_control",
+   "name": "触发 UI 控件按钮",
+   "engine": "partial",
+   "layer": "engine",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "ctrlActivate",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "**只触发引擎内建动作**（ok/cancel 之类），**不会**触发按钮自己的 UI 事件处理器。要真正「按」一个自定义按钮，只能用坐标点击（Windows 层），或者用 ctrlSetText/ctrlChecked 直接改值绕过。"
+  },
+  {
+   "key": "set_control_values",
+   "name": "设置控件值",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "ctrlSetText",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlSetStructuredText",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlChecked",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlSetPosition",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlCommit",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlEnable",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "ctrlShow",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "改值比「点击」可靠：不依赖坐标与焦点，也不受分辨率影响。"
+  },
+  {
+   "key": "open_ui",
+   "name": "打开界面",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "1.38",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "createDisplay",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "createDialog",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "createGearDialog",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "findDisplay",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "allDisplays",
+     "arma3_since": "1.38"
+    },
+    {
+     "name": "closeDisplay",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "forceMap",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "createGearDialog [unit, resource] 是打开装具界面的现成入口。UI 命令是 locale effect：必须在**有玩家的进程**内执行，专用服务器上无效。"
+  },
+  {
+   "key": "world_screen_projection",
+   "name": "世界坐标与屏幕坐标互转",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "worldToScreen",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "screenToWorld",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "「点选世界里的东西」的技术基础：先用 worldToScreen 算出目标在屏幕上的位置，再让输入层在该坐标点一次。比人手点更准，且失败可复现。"
+  },
+  {
+   "key": "unit_actions",
+   "name": "让单位执行玩家级动作",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "action",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "switchAction",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "playMove",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "playMoveNow",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "switchMove",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "playGesture",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "switchGesture",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "action [\"RELOAD\"] 这类用法直接走引擎动作表，等价于玩家按键触发的动作，不需要模拟键盘。"
+  },
+  {
+   "key": "engage_target",
+   "name": "瞄准与开火",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "1.64",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "doFire",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "commandFire",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "fireAtTarget",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "doTarget",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "commandTarget",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "suppressFor",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "doSuppressiveFire",
+     "arma3_since": "1.60"
+    },
+    {
+     "name": "commandSuppressiveFire",
+     "arma3_since": "1.60"
+    },
+    {
+     "name": "unitAimPosition",
+     "arma3_since": "1.64"
+    },
+    {
+     "name": "aimPos",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "无需模拟鼠标按键即可开火；doFire 与 commandFire 的差别在于是否让 AI 自主判断。"
+  },
+  {
+   "key": "interaction_menu",
+   "name": "对象交互菜单（滚轮菜单）",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "1.64",
+   "since_earliest": "1.62",
+   "commands": [
+    {
+     "name": "actionIDs",
+     "arma3_since": "1.64"
+    },
+    {
+     "name": "actionParams",
+     "arma3_since": "1.64"
+    },
+    {
+     "name": "addAction",
+     "arma3_since": null
+    },
+    {
+     "name": "BIS_fnc_holdActionAdd",
+     "arma3_since": "1.62"
+    },
+    {
+     "name": "BIS_fnc_holdActionRemove",
+     "arma3_since": "1.62"
+    }
+   ],
+   "note": "枚举可用动作（actionIDs/actionParams）后直接用 action 执行，不必去点菜单。"
+  },
+  {
+   "key": "map_click_hook",
+   "name": "地图点击钩子",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "onMapSingleClick",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "onDoubleClick",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "onGroupIconClick",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "可挂可清；用于让「在地图上点一下」变成可编程事件。"
+  },
+  {
+   "key": "vehicle_commands",
+   "name": "载具乘员指令",
+   "engine": "yes",
+   "layer": "engine",
+   "since": "1.98",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "sendSimpleCommand",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "vehicleMoveInfo",
+     "arma3_since": "1.98"
+    },
+    {
+     "name": "moveInCargo",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "moveInDriver",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "moveInGunner",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "assignAsCargo",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "sendSimpleCommand 可下达前进/停止/左右转等指令（空中载具会忽略）。"
+  },
+  {
+   "key": "remote_execution",
+   "name": "跨机执行",
+   "engine": "partial",
+   "layer": "forbidden",
+   "since": "1.50",
+   "since_earliest": "1.50",
+   "commands": [
+    {
+     "name": "remoteExec",
+     "arma3_since": "1.50"
+    },
+    {
+     "name": "remoteExecCall",
+     "arma3_since": "1.50"
+    },
+    {
+     "name": "BIS_fnc_MP",
+     "arma3_since": null
+    }
+   ],
+   "note": "本服务器**硬禁** remoteExec 系。理由：它等价于「把任意代码送到别的机器执行」，会绕过本仓库全部参数校验与白名单。需要跨机效果时，应由执行通道按目标选择执行位置，而不是把命令名交给调用方。"
+  },
+  {
+   "key": "dynamic_code",
+   "name": "动态代码执行",
+   "engine": "partial",
+   "layer": "forbidden",
+   "since": "0.50",
+   "since_earliest": "0.50",
+   "commands": [
+    {
+     "name": "compile",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "call",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "spawn",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "execVM",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "callExtension",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "loadFile",
+     "arma3_since": "0.50"
+    },
+    {
+     "name": "preprocessFile",
+     "arma3_since": "0.50"
+    }
+   ],
+   "note": "引擎支持，但本服务器**永远拒绝**。这是本仓库安全模型的基石：一旦允许，命令名可以是任意字符串，类型校验与白名单就全部失效。"
+  }
+ ],
+ "problems": []
+}
