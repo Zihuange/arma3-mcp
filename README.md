@@ -16,7 +16,7 @@ Python 标准库。这条约束由 `tools/check_independence.py` 作为可执行
 | **P0** | MCP 协议骨架、自带命令库、知识/校验/闸门、全量自检、独立性验证 | ✅ 已完成 |
 | **P1** | 游戏内执行通道（扩展 DLL + SQF 执行器），实机闭环 | ✅ 已完成 |
 | **P2** | 用户操作模拟（UI 控件、原生输入注入、坐标校准） | 🔶 进行中 |
-| **P3** | 专用服务器形态（TCP 通道） | 未开始 |
+| **P3** | 专用服务器形态（TCP 通道） | 🔶 进行中 |
 
 ### 现在到底能做什么（按"要不要游戏世界"分）
 
@@ -28,6 +28,7 @@ Python 标准库。这条约束由 `tools/check_independence.py` 作为可执行
 | `screenshot`／`window_info`／`focus_game`／`input_*` | 只要 DLL 加载 | 由 DLL 直接处理，**停在主菜单也能用** |
 | `game_link`／`gates_status` | 只要 DLL 加载 | 同上；用来判断执行器到底在不在跑 |
 | `exec`／`exec_batch`／`config_*` | **SQF 执行器在运行** | 需要游戏世界；执行器目前只在**任务加载后**才启动 |
+| UI 与输入注入类（`screenshot`／`input_*`／`ui_locate`…） | **有界面**的进程 | 专用服务器上是 locale effect，需要进程内有玩家；这类工具会**明确拒绝并说明原因**，而不是超时或静默失败 |
 
 上面这一档划分不是猜的：**主菜单下执行器确实起不来**，已在实机上确认
 （`decisions.md` D20）。原因是模组的 CfgFunctions 在主菜单阶段**没有编译**，
@@ -139,6 +140,7 @@ python3 -m servers.engine
 | `focus_game` | 把游戏窗口切到前台（输入注入前提） |
 | `screenshot` | 截取游戏画面并**直接返回图片**给模型 |
 | `input_click` / `input_drag` / `input_key` / `input_move` | 原生输入注入（鼠标/键盘） |
+| `ui_locate` | 在 UI 里查找控件并换算出**可点击的屏幕坐标**（坐标校准） |
 
 **两条约定**
 

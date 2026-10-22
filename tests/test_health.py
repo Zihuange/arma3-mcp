@@ -214,3 +214,126 @@ class TestExecTimeoutDiagnosis(HealthCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FakeChan:
+    """按脚本回答 status / window_info 的假通道（形态判定只依赖这两条直连命令）。"""
+
+    def __init__(self, status_ok=True, has_window=True, status_timeout=False,
+                 win_timeout=False, connects=1):  # noqa: ANN001
+        self.status_ok = status_ok
+        self.has_window = has_window
+        self.status_timeout = status_timeout
+        self.win_timeout = win_timeout
+        self.connects = connects
+
+    def send(self, payload, timeout_s=5.0):  # noqa: ANN001
+        from adapters.channel import Reply
+
+        class R:
+            def __init__(self, ok, result=None, error=""):  # noqa: ANN001
+                self.ok, self.result, self.error = ok, result, error
+
+        cmd = payload.get("cmd")
+        if cmd == "status":
+            if self.status_timeout:
+                raise OSError("模拟超时")
+            if not self.status_ok:
+                return R(False, error="DLL 未应答")
+            return R(True, {"ok": True, "connected": True, "inbox": 0,
+                            "connects": self.connects})
+        if cmd == "window_info":
+            if self.win_timeout:
+                raise OSError("模拟超时")
+            if self.has_window:
+                return R(True, {"ok": True, "client": [1360, 768],
+                                "client_origin": [0, 23]})
+            return R(True, {"ok": False,
+                            "error": "找不到游戏窗口（扩展尚未在游戏进程内加载？）"})
+        return R(False, error="未预期的命令")
+
+
+class TestProcessKind(unittest.TestCase):
+    """P3：分清客户端与无头服务器 —— 误判会让正常客户端也被拦。"""
+
+    def setUp(self):
+        from adapters import health
+        health.forget_ui_cache()
+
+    def test_client_with_window_has_ui(self):
+        from adapters import health
+        ok, why = health.has_ui(FakeChan(has_window=True))
+        self.assertTrue(ok, why)
+        self.assertEqual(why, "")
+        self.assertIsNone(health.require_ui(FakeChan(has_window=True)))
+
+    def test_no_window_is_headless(self):
+        from adapters import health
+        ok, why = health.has_ui(FakeChan(has_window=False))
+        self.assertFalse(ok)
+        self.assertIn("无头形态", why)
+
+    def test_dll_not_answering_is_unknown_not_headless(self):
+        """DLL 都没答上来时**不能**判成服务器 —— 那是把故障说成形态度。
+
+        这条是这个判据的核心：只有"DLL 在、但没窗口"才等于无头。
+        """
+        from adapters import health
+        ok, why = health.has_ui(FakeChan(status_ok=False))
+        self.assertFalse(ok)
+        self.assertNotIn("无头形态", why)
+        self.assertIn("无法判断", why)
+
+    def test_status_timeout_is_unknown_not_headless(self):
+        from adapters import health
+        ok, why = health.has_ui(FakeChan(status_timeout=True))
+        self.assertFalse(ok)
+        self.assertNotIn("无头形态", why)
+
+    def test_window_timeout_is_unknown_not_headless(self):
+        """window_info 超时 ≠ 没窗口：超时可能是别的原因，不能当形态结论。"""
+        from adapters import health
+        ok, why = health.has_ui(FakeChan(win_timeout=True))
+        self.assertFalse(ok)
+        self.assertNotIn("无头形态", why)
+
+    def test_refusal_text_says_what_still_works(self):
+        """拒绝说明要讲清"这不是故障"，并指出服务器上还能做什么。"""
+        from adapters import health
+        text = health.require_ui(FakeChan(has_window=False))
+        self.assertIsNotNone(text)
+        self.assertIn("locale effect", text)
+        self.assertIn("exec", text)
+        self.assertIn("config_", text)
+        self.assertIn("专用服务器", text)
+
+    def test_result_is_cached_per_channel(self):
+        """形态按进程算，缓存它免得每次点击都往返两趟 DLL。"""
+        from adapters import health
+        chan = FakeChan(has_window=False)
+        self.assertFalse(health.has_ui(chan)[0])
+        chan.has_window = True           # 改掉也不该影响已缓存的结果
+        self.assertFalse(health.has_ui(chan)[0])
+        self.assertTrue(health.has_ui(chan, refresh=True)[0])
+
+    def test_cache_invalidated_on_reconnect(self):
+        """重连后必须重新判定 —— 客户端换成专用服务器就是靠这条生效的。
+
+        实测踩过：缓存只按通道对象做键时，游戏从客户端换成服务器（DLL 重连、
+        通道对象不变）之后仍沿用"有 UI"的旧判定，UI 工具照旧放行，修复明明
+        生效却看不出效果。key 里带上 connects 就自动解决了。
+        """
+        from adapters import health
+        chan = FakeChan(has_window=True, connects=1)      # 客户端
+        self.assertTrue(health.has_ui(chan)[0])
+        chan.has_window = False                            # 同一通道，换成服务器
+        chan.connects = 2                                  # 重连发生
+        self.assertFalse(health.has_ui(chan)[0])
+
+    def test_forget_cache_clears(self):
+        from adapters import health
+        chan = FakeChan(has_window=False)
+        health.has_ui(chan)
+        health.forget_ui_cache()
+        chan.has_window = True
+        self.assertTrue(health.has_ui(chan)[0])

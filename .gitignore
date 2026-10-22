@@ -29,3 +29,18 @@ game/mod/*.dll.old-*
 # 运行时诊断与截图（DLL 生成，不入库）
 game/mod/arma3_mcp_diag.txt
 build/shots/
+
+# ---- 专用服务器测试环境 ----
+# server/ 下只有三样东西入库：配置、启动脚本、测试任务。
+# 其余全是引擎自己生成的运行时产物（RPT、profile、各种 Cache、BE 目录），
+# 每次启动都会重建 —— 入库只会制造噪音，还容易把本地状态当成改动提交。
+server/*
+!server/server.cfg
+!server/start_server.bat
+!server/mpmissions
+
+# 任务目录里同样只留 mission.sqm 与脚本
+server/mpmissions/**/*.pbo
+server/mpmissions/**/*.bisign
+server/mpmissions/**/*.log
+server/mpmissions/**/*.rpt

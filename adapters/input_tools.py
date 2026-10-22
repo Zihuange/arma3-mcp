@@ -56,6 +56,22 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                 "UI 控件可用 ctrlSetText/ctrlActivate。）")
         return None
 
+    def _require_ui() -> ToolResult | None:
+        """无头形态（专用服务器）下明确拒绝 UI/输入类操作。
+
+        判据见 adapters/health.py 的 has_ui：**DLL 答得出 status，但找不到窗口**。
+        不这样拦的话，这些工具在服务器上会各自以不同方式失败 —— 有的超时、有的
+        不报错却什么也没发生 —— 而调用方很难从中读出"这是形态不对，不是故障"。
+
+        注意 window_info 自身**不**走这个检查：它是"看"的工具，把"找不到窗口"
+        如实报出来本身就是有用的信息，也是本判据的依据。
+        """
+        from adapters import health as _health
+        why = _health.require_ui(chan)
+        if why is None:
+            return None
+        return ToolResult.fail(why, {"headless": True})
+
     # ------------------------------------------------------------ 窗口信息
 
     @reg.tool(
@@ -101,6 +117,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         phase="input",
     )
     def _focus(_args: dict) -> ToolResult:
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         reply = chan.send({"cmd": "focus_game", "args": []}, timeout_s=8.0)
         if not reply.ok:
             return ToolResult.fail("聚焦失败：%s" % reply.error)
@@ -141,6 +160,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         gate_err = _require_inject()
         if gate_err is not None:
             return gate_err
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         reply = chan.send({
             "cmd": "input_click",
             "args": [args["x"], args["y"], args.get("button", 0),
@@ -179,6 +201,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         gate_err = _require_inject()
         if gate_err is not None:
             return gate_err
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         reply = chan.send({
             "cmd": "input_drag",
             "args": [args["x1"], args["y1"], args["x2"], args["y2"],
@@ -218,6 +243,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         gate_err = _require_inject()
         if gate_err is not None:
             return gate_err
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         reply = chan.send({
             "cmd": "input_key",
             "args": [args["scan"], 1 if args["down"] else 0,
@@ -247,6 +275,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         gate_err = _require_inject()
         if gate_err is not None:
             return gate_err
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         reply = chan.send({"cmd": "input_move",
                            "args": [args["x"], args["y"]]}, timeout_s=8.0)
         if not reply.ok:
@@ -276,6 +307,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         phase="vision",
     )
     def _screenshot(args: dict) -> ToolResult:
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
         out_dir = _shot_dir()
         try:
             os.makedirs(out_dir, exist_ok=True)

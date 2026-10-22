@@ -204,9 +204,46 @@ DLL 需放在可加载目录（mod 根，引擎优先探测 `<name>_x64.dll`）�
 
 同一 DLL 走 TCP 模式即可复用（既有工程已验证该路径）。此形态下：
 
-- 世界/单位层命令可用；
+- 世界/单位层命令可用（`exec` / `config_*`；执行器照常由模组的 preInit/postInit 拉起）；
 - **UI 与输入注入层不可用**（locale effect，需要进程内有玩家）——
   服务器形态下这些工具要**明确拒绝并说明原因**，而不是超时或静默失败。
+
+**已实现**：形态判定与拒绝逻辑（`adapters/health.py` 的 `has_ui` / `require_ui`）。
+
+判据是两条一起看：**DLL 答得出 `status`**（证明扩展确实加载在游戏进程里），
+**但 `window_info` 找不到窗口** —— 这个前提下无窗口就是服务器的预期状态。
+只有第一条成立而第二条失败时才判为无头；DLL 没答、或查询超时，都如实报"无法
+判断"，绝不猜成服务器（那会把故障说成形态度）。
+
+`window_info` 自身不走这个检查：它是"看"的工具，把"找不到窗口"如实报出来本身
+就是有用信息，也正是本判据的依据。判定结果按进程缓存（`forget_ui_cache()` 在
+换连接后清）。
+
+**已在真实专用服务器上跑通**（2026-09-25，`arma3server_x64.exe` + `server/` 测试环境）：
+
+| 项 | 结果 |
+|---|---|
+| 形态判定 | ✅ 判为无头；`screenshot` / `ui_locate` 明确拒绝并说明原因 |
+| `exec` / `config_*` | ✅ 正常（`worldName` → "Altis"，100 ms；`config_tree` 返回 8392 个子类） |
+| 执行器 | ✅ 由任务 `initServer.sqf` 拉起，心跳"运行中" |
+
+**跑通它需要的四个前提**（每个都踩过，缺一不可）：
+
+1. **`persistent = 1`** —— 否则 `-autoInit` 被跳过，服务器会明说
+   "Autolnit is supported only for persistent missions!"。
+2. **任务必须放在 `<游戏目录>/mpmissions/`** —— `-profiles=` 只改 profile 位置，
+   **不改任务搜索路径**（实测报错原文：`Can't find mission template: ... in 'mpmissions\'`）。
+   `start_server.bat` 现在每次启动都会自动把 `server/mpmissions/` 里的任务拷过去。
+3. **任务不能声明过时的 addon** —— 模板里的 `A3_Characters_F` 在现代版本对应不到
+   pbo（现名 `characters_f.pbo`），引擎会以"依赖已删除的 DLC"为由拒绝加载。
+   空场景不需要任何 addon 声明。
+4. **`server.cfg` 的 `class Missions`** 与 `-autoInit` 配合；用命令行 `-mission=`
+   代替是行不通的（同样受 persistent 限制）。
+
+另外：任务骨架取自 `arma_llm_commander` 的空场景（已确认其中引用 alc 函数 0 次，
+无代码耦合），来源记在 provenance.md。BattlEye 已按 `BattlEye = 0;` 关闭。
+
+
 
 ## 故障排查
 

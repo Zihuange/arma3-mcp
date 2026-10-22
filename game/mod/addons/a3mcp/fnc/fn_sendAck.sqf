@@ -14,12 +14,19 @@
 // 静默退回空串 —— 那是"回执里结果为空"的成因。
 params [["_cid", "", [""]], ["_ok", true, [true]], ["_payload", nil]];
 
-private _json = "";
-if (_ok) then {
-    _json = [_payload] call a3mcp_fnc_jsonStringify;
-} else {
-    _json = _payload;      // 失败时负载就是可读的错误说明，直接进 error 字段
-};
+// ⚠ 失败路径**也必须序列化**，不能把裸文本直接拼进 error 字段。
+//
+// 这里曾经是 `_json = _payload;`，注释还写着"失败时负载就是可读的错误说明，
+// 直接进 error 字段"。但 error 字段要的是 **JSON 字符串值**（带引号），不是裸
+// 文本：拼出来是 `"error":cmd_failed: 表达式校验未通过…`，整个回执不再是合法
+// JSON。后果很隐蔽——MCP 解析失败就把回执当噪音丢掉，调用方拿不到任何原因，
+// 只能等满超时；而"失败"恰恰是最需要看到原因的时候。
+//
+// 症状还特别容易被误判：原始字节是合法 UTF-8、中文显示完全正常，肉眼看那条
+// 回执"像"合法 JSON，只有逐字节比对才看得出少了引号。
+//
+// 统一走 jsonStringify：字符串 → 带引号的 JSON 值，结构 → 对象/数组。
+private _json = [_payload] call a3mcp_fnc_jsonStringify;
 
 private _ack = [_cid, _ok, _json] call a3mcp_fnc_ackJson;
 diag_log format ["[A3MCP] ack -> cid=%1 ok=%2", _cid, _ok];

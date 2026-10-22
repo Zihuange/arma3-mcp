@@ -762,6 +762,24 @@ std::string make_status() {
 
 // ------------------------------------------------------------------ 输入注入
 
+// 本进程是不是**专用服务器**（arma3server*.exe）？
+//
+// 为什么按**进程名**判、而不是按窗口类名排除控制台：后者我先试过了，猜错。
+// 实测 arma3server_x64.exe 的控制台长这样：
+//
+//     class='#32770'  client=402x154  title='Arma 3 Console version ... x64 :'
+//
+// 类名 `#32770` 是 Windows 的**对话框类**，不是 `ConsoleWindowClass`（标准控制台），
+// 所以按类名排除整个失效，截图照样拍到控制台、形态判定照样误判。
+// 进程名是唯一不会骗人的判据：服务器进程叫什么，它就是什么。
+bool is_dedicated_server() {
+    char path[MAX_PATH] = {0};
+    if (!GetModuleFileNameA(NULL, path, sizeof(path))) return false;
+    const char *name = std::strrchr(path, '\\');
+    name = name ? name + 1 : path;
+    return _strnicmp(name, "arma3server", 11) == 0;
+}
+
 // 找本进程的"游戏主窗口"：枚举顶层窗口，取可见且客户区面积最大的那个。
 //
 // 为什么不用 GetForegroundWindow 直接当目标：游戏**经常不是前台**（用户在看
@@ -769,7 +787,12 @@ std::string make_status() {
 // 结果是"用户一旦切走就截不到图"——这不是安全需要，是设计缺陷。
 // 只有**输入注入**才必须要求前台（SendInput 作用于系统输入队列，前台不是
 // 游戏时会点到别的程序上）。
+//
+// ⚠ 专用服务器**没有游戏窗口**：它唯一可见的窗口是控制台（一个 #32770 对话框），
+// 若把它当成游戏窗口，截图会拍到控制台、window_info 会报告控制台尺寸，而形态
+// 判定依赖的"找不到游戏窗口"永远不成立 —— 整条 P3 判据随之失效。实测踩过。
 HWND find_game_window() {
+    if (is_dedicated_server()) return nullptr;
     struct Ctx { HWND best; long long area; };
     Ctx ctx = {nullptr, 0};
     EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {

@@ -132,3 +132,105 @@ def describe_line(health: dict) -> str:
     if health.get("inbox") is not None:
         parts.append("inbox=%s" % health["inbox"])
     return "，".join(parts)
+
+
+# ------------------------------------------------------------------ 进程形态
+#
+# P3（专用服务器形态）的前提：服务器上 UI 与输入注入类命令是 locale effect ——
+# 要进程内有玩家才有意义。所以必须先分清"连的是客户端还是无头服务器"，才能让
+# 那批工具**明确拒绝并说明原因**，而不是超时或静默失败（deploy.md 的要求）。
+#
+# 判据（两条一起看，缺一不可）：
+#   1. DLL 能回答 status      —— 证明扩展确实加载在游戏进程里（排除"没加载"）；
+#   2. 在此前提下 window_info 找不到窗口 —— 那正是专用服务器的预期状态。
+# 只有 1 成立而 2 失败时才判为无头；否则如实报"未知"，不猜。
+#
+# 为什么不用别的更"直接"的办法：DLL 侧还没有报告进程形态的字段（那需要重编译
+# 部署）。而 status + window_info 都是 DLL 直连命令，不依赖 SQF 执行器，所以
+# 即使执行器没跑也能判 —— 这恰好也是"主菜单下想知道自己有没有 UI"的场景。
+
+# 缓存键是 (通道, 连接计数) —— **不是**单独的通道。
+#
+# 实测踩过：只用 id(chan) 做键时，游戏从客户端换成专用服务器（DLL 重连、通道
+# 对象不变）之后，缓存里仍是"有 UI"的旧判定，于是 UI 工具照旧放行 —— 修复明明
+# 已经生效，却因为缓存而看不出效果。status 里的 connects 每次重连都会增长，
+# 拿它入键，重连即自动失效，不需要谁来记得手动清。
+_UI_CACHE: dict[tuple, tuple[bool, str]] = {}
+
+
+def has_ui(chan, refresh: bool = False) -> tuple[bool, str]:  # noqa: ANN001
+    """返回 (是否有 UI, 说明)。
+
+    缓存按**连接**计（见 _UI_CACHE 的说明）：形态在一个进程生命周期内不变，
+    但换进程会变，而换进程必然伴随重连。
+
+    绝不抛异常：探测本身失败时返回 (False, 原因)，由调用方决定怎么说。
+    """
+    # 1) DLL 在不在？status 是直连命令，执行器没跑也能答，且顺带给出连接计数。
+    try:
+        reply = chan.send({"cmd": "status", "args": []}, timeout_s=3.0)
+    except Exception as exc:  # noqa: BLE001
+        return (False, "查询 DLL 状态时抛错：%s" % exc)
+
+    if not getattr(reply, "ok", False):
+        # DLL 都没答上来，就无从判断形态。**不要**据此说"这是服务器"。
+        return (False, "DLL 未应答，无法判断进程形态（%s）"
+                % (getattr(reply, "error", "") or "无回执"))
+
+    raw = reply.result if isinstance(reply.result, dict) else {}
+    if raw.get("connected") is False:
+        return (False, "DLL 报告未连接，无法判断进程形态")
+
+    key = (id(chan), raw.get("connects"))
+    if not refresh and key in _UI_CACHE:
+        return _UI_CACHE[key]
+
+    # 2) 有没有窗口？
+    try:
+        win = chan.send({"cmd": "window_info", "args": []}, timeout_s=3.0)
+    except Exception as exc:  # noqa: BLE001
+        return (False, "查询窗口信息时抛错：%s" % exc)
+
+    if getattr(win, "ok", False) and isinstance(win.result, dict) \
+            and win.result.get("ok"):
+        result = (True, "")
+        _UI_CACHE[key] = result
+        return result
+
+    detail = ""
+    if getattr(win, "ok", False) and isinstance(win.result, dict):
+        detail = str(win.result.get("error") or "")
+    if not detail:
+        detail = str(getattr(win, "error", "") or "")
+
+    # ⚠ 不要把 DLL 那句原始错误拼进来。它写的是"扩展尚未在游戏进程内加载？"，
+    # 而我们**刚刚**用 status 确认了扩展就在游戏进程里 —— 拼上去就是自相矛盾，
+    # 还会把一个已被排除的猜测重新递给读者。那句话是给"加载失败"场景写的，
+    # 此处结论已由 MCP 侧给出，不需要它。detail 仅用于日志追溯。
+    del detail
+    result = (False, "扩展已加载，但找不到游戏窗口 —— 判定为**无头形态**（专用服务器）")
+    _UI_CACHE[key] = result
+    return result
+
+
+def forget_ui_cache() -> None:
+    """换连接/重启游戏后调用 —— 形态是按进程算的，连接换了就该重新判。"""
+    _UI_CACHE.clear()
+
+
+def require_ui(chan) -> Optional[str]:  # noqa: ANN001
+    """给 UI/输入类工具用：无 UI 时返回**拒绝说明**，有 UI 时返回 None。
+
+    返回的文本要能让调用方明白"这不是故障，是形态不支持"，并且知道还能做什么。
+    """
+    ok, why = has_ui(chan)
+    if ok:
+        return None
+    return (
+        "%s\n\n"
+        "这类操作是 locale effect：需要**进程内有玩家**（即带界面的客户端）才有意义，"
+        "专用服务器上没有屏幕、没有输入设备，也没有 UI 控件树。\n"
+        "服务器形态下仍然可用的是：exec（世界/单位层命令）、config_*、"
+        "以及知识类工具。\n"
+        "如果你确认连的是客户端，那么问题在别处：先看 needs 那行说明，"
+        "再用 game_link 查 DLL 状态。" % why)
