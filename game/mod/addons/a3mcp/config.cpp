@@ -45,6 +45,7 @@ class CfgFunctions {
             class ackJson {};
             class pushResult {};
             class sendAck {};
+            class input {};
             class validate {};
             class serialize {};
             class resolve {};

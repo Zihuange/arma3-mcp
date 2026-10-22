@@ -45,6 +45,14 @@ private _cid = ([_job, "cid", ""] call _fieldOf) + "";
 private _type = toLower (([_job, "cmd", ""] call _fieldOf) + "");
 private _args = [_job, "args", []] call _fieldOf;
 
+// 输入注入 / 视觉捕捉：实现在 DLL 内，SQF 只做转发（见 fn_input 的说明）。
+// 放在 switch 之前是因为它们不是"交给 SQF 执行"的命令。
+if (_type in ["window_info", "input_move", "input_click", "input_drag",
+              "input_key", "capture"]) exitWith {
+    [_cid, _args, _type] call a3mcp_fnc_input;
+    true
+};
+
 switch (_type) do {
     case "exec": {
         [_cid, _args] call a3mcp_fnc_run;

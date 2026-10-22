@@ -26,7 +26,8 @@ target_compile_definitions(arma3_mcp PRIVATE
     NOMINMAX
     _CRT_SECURE_NO_WARNINGS
 )
-target_link_libraries(arma3_mcp PRIVATE ws2_32)
+# gdiplus：截图后编码 PNG（Windows 自带，无需第三方库）
+target_link_libraries(arma3_mcp PRIVATE ws2_32 gdiplus)
 
 # 源文件含 UTF-8 中文注释：必须让 MSVC 按 UTF-8 解析。默认按本地代码页解析
 # 会让注释吞掉换行，产生大范围级联编译错误（同类工程的实测教训）。

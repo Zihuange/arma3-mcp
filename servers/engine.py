@@ -24,7 +24,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import adapters                                          # noqa: E402
-from adapters import config_tools, control_tools, exec_tools  # noqa: E402
+from adapters import (config_tools, control_tools, exec_tools,  # noqa: E402
+                      input_tools)
 from guard import Gates                                  # noqa: E402
 from knowledge.capabilities import default_matrix        # noqa: E402
 from knowledge.index import default_index                # noqa: E402
@@ -86,6 +87,8 @@ def build_registry(channel=None) -> Registry:
     control_tools.register(reg, gates, chan)
     # 链路诊断：直接查 DLL 的内部队列状态（排查"命令发了没反应"的关键入口）
     control_tools.register_link_tool(reg, chan)
+    # 用户操作模拟与视觉捕捉（由游戏进程内的 DLL 执行）
+    input_tools.register(reg, chan, gates)
     # config 查询复用执行通道（运行时读游戏内 config 树）
     config_tools.register(reg, chan, config_tools.ConfigTools(chan))
     return reg

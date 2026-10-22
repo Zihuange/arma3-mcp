@@ -44,6 +44,17 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 
+// ⚠ GDI+ 的头文件（GdiplusBitmap.h 等）内部使用 min/max，而本文件定义了
+// NOMINMAX（防止 windows.h 的 min/max 宏污染 std）。两者直接相遇会编译失败
+// （C2146/C2447）。解法：用 std::min/std::max 补上 GDI+ 需要的名字。
+#include <algorithm>
+using std::min;
+using std::max;
+// GDI+ 还依赖 COM 接口（IStream 等），而 WIN32_LEAN_AND_MEAN 把 ole 系列
+// 头文件排除了 —— 显式补上，否则 GdiplusImaging.h 会报一堆语法错误。
+#include <objidl.h>
+#include <gdiplus.h>
+
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -55,6 +66,7 @@
 #include <vector>
 
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
 namespace a3mcp {
 
@@ -419,6 +431,334 @@ std::string make_status() {
     return std::string(buf);
 }
 
+// ===========================================================================
+// 用户操作模拟与视觉捕捉
+//
+// 这两块放在 DLL（游戏进程内）而不是外部工具，理由：
+//   · 进程内才能直接判定"目标窗口是否属于本进程"，避免误操作别的程序；
+//   · 进程内才能用 PrintWindow 抓取本进程的 DirectX 画面；
+//   · 不需要跨进程坐标换算带来的误差。
+// ===========================================================================
+
+// ------------------------------------------------------------------ 输入注入
+
+// 找本进程的"游戏主窗口"：枚举顶层窗口，取可见且客户区面积最大的那个。
+//
+// 为什么不用 GetForegroundWindow 直接当目标：游戏**经常不是前台**（用户在看
+// 文档、看 Agent 输出），而截图在后台完全可以进行。之前把截图也绑在前台上，
+// 结果是"用户一旦切走就截不到图"——这不是安全需要，是设计缺陷。
+// 只有**输入注入**才必须要求前台（SendInput 作用于系统输入队列，前台不是
+// 游戏时会点到别的程序上）。
+HWND find_game_window() {
+    struct Ctx { HWND best; long long area; };
+    Ctx ctx = {nullptr, 0};
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        Ctx *c = reinterpret_cast<Ctx *>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != GetCurrentProcessId()) return TRUE;
+        if (!IsWindowVisible(hwnd)) return TRUE;
+        RECT rc = {0, 0, 0, 0};
+        if (!GetClientRect(hwnd, &rc)) return TRUE;
+        long long area = static_cast<long long>(rc.right - rc.left)
+                       * static_cast<long long>(rc.bottom - rc.top);
+        if (area > c->area) { c->area = area; c->best = hwnd; }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.best;
+}
+
+// 前台校验：只允许对本进程的窗口注入。
+//
+// 为什么必须校验：SendInput 作用于**系统输入队列**，注入时如果前台是别的
+// 窗口，那次点击就会打到那个窗口上（可能是浏览器、可能是聊天框）。
+// 这不是"可能出错"，而是"必然会打错"，所以默认拒绝而不是尽力而为。
+bool foreground_is_self(std::string &why) {
+    HWND fg = GetForegroundWindow();
+    if (!fg) {
+        why = "当前没有前台窗口";
+        return false;
+    }
+    DWORD pid = 0;
+    GetWindowThreadProcessId(fg, &pid);
+    if (pid != GetCurrentProcessId()) {
+        why = "前台窗口不属于游戏进程（拒绝注入，避免误操作其它程序）";
+        return false;
+    }
+    return true;
+}
+
+std::string json_ok(const std::string &extra = "") {
+    return extra.empty() ? std::string("{\"ok\":true}")
+                         : std::string("{\"ok\":true,") + extra + "}";
+}
+
+std::string json_err(const std::string &message) {
+    return "{\"ok\":false,\"error\":\"" + json_escape(message) + "\"}";
+}
+
+// 从 " 100 200 0 30" 这类尾部提取整数序列。
+// 转发命令的参数是空格分隔的整数，没有嵌套结构，不需要 JSON 解析。
+std::vector<int> tail_ints(const std::string &s) {
+    std::vector<int> out;
+    const char *p = s.c_str();
+    while (*p) {
+        while (*p == ' ' || *p == '\t') ++p;
+        if (!*p) break;
+        char *end = nullptr;
+        long v = std::strtol(p, &end, 10);
+        if (end == p) break;          // 不是数字就停
+        out.push_back(static_cast<int>(v));
+        p = end;
+    }
+    return out;
+}
+
+// 鼠标坐标一律用**屏幕坐标**（SendInput 与 SetCursorPos 都按屏幕坐标工作）。
+// 调用方应先 window_info 拿到客户区原点，再做换算。
+std::string input_move(int x, int y) {
+    if (!SetCursorPos(x, y)) {
+        return json_err("SetCursorPos 失败（坐标越界？）");
+    }
+    return json_ok();
+}
+
+std::string input_click(int x, int y, int button, int hold_ms) {
+    std::string why;
+    if (!foreground_is_self(why)) return json_err(why);
+
+    if (!SetCursorPos(x, y)) return json_err("SetCursorPos 失败");
+    Sleep(10);   // 给系统一点时间更新指针位置，再发按键
+
+    DWORD down_flag = MOUSEEVENTF_LEFTDOWN, up_flag = MOUSEEVENTF_LEFTUP;
+    if (button == 1) { down_flag = MOUSEEVENTF_RIGHTDOWN; up_flag = MOUSEEVENTF_RIGHTUP; }
+    else if (button == 2) { down_flag = MOUSEEVENTF_MIDDLEDOWN; up_flag = MOUSEEVENTF_MIDDLEUP; }
+
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = down_flag;
+    if (SendInput(1, &in, sizeof(INPUT)) != 1) {
+        return json_err("SendInput 按下失败（输入被系统拒绝？）");
+    }
+    if (hold_ms > 0) Sleep(hold_ms > 5000 ? 5000 : hold_ms);
+    in.mi.dwFlags = up_flag;
+    SendInput(1, &in, sizeof(INPUT));
+    return json_ok("\"x\":" + std::to_string(x) + ",\"y\":" + std::to_string(y));
+}
+
+// 键盘：用扫描码（KEYEVENTF_SCANCODE）而不是虚拟键码。
+// 游戏普遍按扫描码读键盘（与键盘布局无关），用虚拟键码在非美式布局下会错位。
+std::string input_key(int scan, bool down, int hold_ms) {
+    std::string why;
+    if (!foreground_is_self(why)) return json_err(why);
+    if (scan <= 0 || scan > 255) return json_err("扫描码应在 1..255");
+
+    INPUT in = {};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wScan = static_cast<WORD>(scan);
+    in.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0 : KEYEVENTF_KEYUP);
+    if (SendInput(1, &in, sizeof(INPUT)) != 1) {
+        return json_err("SendInput 键盘事件失败");
+    }
+    if (down && hold_ms > 0) {
+        Sleep(hold_ms > 5000 ? 5000 : hold_ms);
+        in.ki.dwFlags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
+        SendInput(1, &in, sizeof(INPUT));
+    }
+    return json_ok();
+}
+
+// 拖拽：按下 -> 分步移动 -> 抬起。
+// 分步而不是瞬移：很多 UI 只在指针**移动过程**中更新拖拽状态，
+// 一次跳到终点会被当作"没有拖拽"。
+std::string input_drag(int x1, int y1, int x2, int y2, int steps) {
+    std::string why;
+    if (!foreground_is_self(why)) return json_err(why);
+    if (steps < 1) steps = 1;
+    if (steps > 100) steps = 100;
+
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+
+    SetCursorPos(x1, y1);
+    Sleep(10);
+    in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    if (SendInput(1, &in, sizeof(INPUT)) != 1) return json_err("拖拽按下失败");
+
+    for (int i = 1; i <= steps; ++i) {
+        int x = x1 + (x2 - x1) * i / steps;
+        int y = y1 + (y2 - y1) * i / steps;
+        SetCursorPos(x, y);
+        Sleep(15);
+    }
+
+    in.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    SendInput(1, &in, sizeof(INPUT));
+    return json_ok("\"from\":[" + std::to_string(x1) + "," + std::to_string(y1)
+                   + "],\"to\":[" + std::to_string(x2) + "," + std::to_string(y2)
+                   + "],\"steps\":" + std::to_string(steps));
+}
+
+// ------------------------------------------------------------------ 窗口信息
+
+// 坐标换算的前提：调用方必须知道客户区在屏幕上的原点与 DPI。
+// 直接把这三个数给出去，胜过在文档里描述。
+std::string window_info() {
+    // 报告"游戏窗口"而不是"前台窗口"：调用方关心的是该往哪儿点、截哪儿，
+    // 而游戏多半不在前台。同时如实告知它当前是否前台 —— 输入注入需要。
+    HWND hwnd = find_game_window();
+    if (!hwnd) return json_err("找不到游戏窗口（扩展尚未在游戏进程内加载？）");
+
+    HWND fg = GetForegroundWindow();
+    bool is_self = (fg == hwnd);
+
+    RECT wr = {0, 0, 0, 0}, cr = {0, 0, 0, 0};
+    GetWindowRect(hwnd, &wr);
+    GetClientRect(hwnd, &cr);
+    POINT origin = {0, 0};
+    ClientToScreen(hwnd, &origin);
+
+    UINT dpi = 96;
+    using GetDpiForWindowFn = UINT(WINAPI *)(HWND);
+    HMODULE user32 = GetModuleHandleA("user32.dll");
+    if (user32) {
+        auto fn = reinterpret_cast<GetDpiForWindowFn>(
+            GetProcAddress(user32, "GetDpiForWindow"));
+        if (fn) dpi = fn(hwnd);
+    }
+
+    char buf[512];
+    std::snprintf(buf, sizeof(buf),
+        "{\"ok\":true,\"is_self\":%s,\"foreground\":true,"
+        "\"window\":[%ld,%ld,%ld,%ld],"
+        "\"client\":[%ld,%ld],"
+        "\"client_origin\":[%ld,%ld],"
+        "\"dpi\":%u,\"scale\":%.2f}",
+        is_self ? "true" : "false",
+        wr.left, wr.top, wr.right, wr.bottom,
+        cr.right, cr.bottom,
+        origin.x, origin.y, dpi, dpi / 96.0);
+    return std::string(buf);
+}
+
+// ------------------------------------------------------------------ 视觉捕捉
+
+ULONG_PTR g_gdiplus_token = 0;
+bool g_gdiplus_ready = false;
+
+bool ensure_gdiplus() {
+    if (g_gdiplus_ready) return true;
+    Gdiplus::GdiplusStartupInput input;
+    if (Gdiplus::GdiplusStartup(&g_gdiplus_token, &input, nullptr) != Gdiplus::Ok) {
+        return false;
+    }
+    g_gdiplus_ready = true;
+    return true;
+}
+
+int encoder_clsid(const WCHAR *mime, CLSID *clsid) {
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (size == 0) return -1;
+    auto *info = static_cast<Gdiplus::ImageCodecInfo *>(malloc(size));
+    if (!info) return -1;
+    Gdiplus::GetImageEncoders(num, size, info);
+    int found = -1;
+    for (UINT i = 0; i < num; ++i) {
+        if (wcscmp(info[i].MimeType, mime) == 0) {
+            *clsid = info[i].Clsid;
+            found = static_cast<int>(i);
+            break;
+        }
+    }
+    free(info);
+    return found;
+}
+
+// 把窗口画面存成 PNG。
+//
+// 优先级：PrintWindow + PW_RENDERFULLCONTENT（能抓到 DirectX 内容）
+//        → 失败则退回 BitBlt（窗口化模式下通常可用；独占全屏会得到黑屏）。
+//
+// 缩放：给上层一个 max_width 是因为截图可能很大（1080p 的 PNG 上 MB），
+// 而 MCP 返回图片要走 JSON 传输，体积直接决定往返耗时。
+std::string capture_window(const std::string &out_path, int max_width) {
+    if (!ensure_gdiplus()) return json_err("GDI+ 初始化失败");
+
+    // 截图在**后台也能做**：目标是游戏窗口，不要求它是前台。
+    // （只有输入注入才必须前台。）
+    HWND hwnd = find_game_window();
+    if (!hwnd) return json_err("找不到游戏窗口");
+
+    RECT cr = {0, 0, 0, 0};
+    GetClientRect(hwnd, &cr);
+    int w = cr.right - cr.left;
+    int h = cr.bottom - cr.top;
+    if (w <= 0 || h <= 0) return json_err("窗口客户区尺寸无效");
+
+    HDC hdc = GetDC(hwnd);
+    HDC mem = CreateCompatibleDC(hdc);
+    HBITMAP bmp = CreateCompatibleBitmap(hdc, w, h);
+    if (!bmp || !mem) {
+        if (bmp) DeleteObject(bmp);
+        if (mem) DeleteDC(mem);
+        ReleaseDC(hwnd, hdc);
+        return json_err("创建位图失败");
+    }
+    HGDIOBJ old = SelectObject(mem, bmp);
+
+    // 先试能抓 DirectX 的方式
+    BOOL printed = PrintWindow(hwnd, mem, 0x00000002 /* PW_RENDERFULLCONTENT */);
+    const char *method = "PrintWindow";
+    if (!printed) {
+        BitBlt(mem, 0, 0, w, h, hdc, 0, 0, SRCCOPY);
+        method = "BitBlt";
+    }
+
+    Gdiplus::Bitmap image(bmp, nullptr);
+
+    // 需要缩放时先生成缩放副本
+    Gdiplus::Bitmap *to_save = &image;
+    Gdiplus::Bitmap *scaled = nullptr;
+    int out_w = w, out_h = h;
+    if (max_width > 0 && w > max_width) {
+        out_w = max_width;
+        out_h = static_cast<int>(static_cast<double>(h) * max_width / w);
+        if (out_h < 1) out_h = 1;
+        scaled = new Gdiplus::Bitmap(out_w, out_h, PixelFormat32bppARGB);
+        Gdiplus::Graphics g(scaled);
+        g.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBicubic);
+        g.DrawImage(&image, 0, 0, out_w, out_h);
+        to_save = scaled;
+    }
+
+    CLSID clsid;
+    std::string error;
+    if (encoder_clsid(L"image/png", &clsid) < 0) {
+        error = "找不到 PNG 编码器";
+    } else {
+        std::wstring wide(out_path.begin(), out_path.end());
+        if (to_save->Save(wide.c_str(), &clsid, nullptr) != Gdiplus::Ok) {
+            error = "保存 PNG 失败（路径不可写？）";
+        }
+    }
+
+    if (scaled) delete scaled;
+    SelectObject(mem, old);
+    DeleteObject(bmp);
+    DeleteDC(mem);
+    ReleaseDC(hwnd, hdc);
+
+    if (!error.empty()) return json_err(error);
+
+    char buf[640];
+    std::snprintf(buf, sizeof(buf),
+        "{\"ok\":true,\"path\":\"%s\",\"width\":%d,\"height\":%d,"
+        "\"source_width\":%d,\"source_height\":%d,\"method\":\"%s\"}",
+        json_escape(out_path).c_str(), out_w, out_h, w, h, method);
+    return std::string(buf);
+}
+
 std::string handle_call(const std::string &fn,
                         const std::vector<std::string> &args) {
     if (fn == "status") {
@@ -434,6 +774,54 @@ std::string handle_call(const std::string &fn,
         if (args.empty()) return "{\"ok\":false,\"error\":\"push 需要参数\"}";
         g_outq.push(args[0]);
         return "{\"ok\":true,\"queued\":true}";
+    }
+    // ---- 用户操作模拟与视觉捕捉 ----
+    //
+    // 这些命令由 SQF 转发过来（MCP 下发的命令统一进 SQF 队列，SQF 再用
+    // callExtension 转一手）。转发形式是**单字符串**："cmd arg1 arg2 …"。
+    // 不用数组形式的原因见文件末尾关于 push/poll 的说明：数组形式在引擎侧
+    // 不可靠，而单字符串形式没有中间层。
+    if (fn == "window_info") {
+        return window_info();
+    }
+    if (fn.rfind("input_move", 0) == 0) {
+        std::vector<int> v = tail_ints(fn.substr(10));
+        if (v.size() < 2) return json_err("input_move 需要 x y");
+        return input_move(v[0], v[1]);
+    }
+    if (fn.rfind("input_click", 0) == 0) {
+        std::vector<int> v = tail_ints(fn.substr(11));
+        if (v.size() < 2) return json_err("input_click 需要 x y [button] [hold_ms]");
+        return input_click(v[0], v[1],
+                           v.size() > 2 ? v[2] : 0,
+                           v.size() > 3 ? v[3] : 30);
+    }
+    if (fn.rfind("input_key", 0) == 0) {
+        std::vector<int> v = tail_ints(fn.substr(9));
+        if (v.size() < 2) return json_err("input_key 需要 scan down [hold_ms]");
+        return input_key(v[0], v[1] != 0, v.size() > 2 ? v[2] : 0);
+    }
+    if (fn.rfind("input_drag", 0) == 0) {
+        std::vector<int> v = tail_ints(fn.substr(10));
+        if (v.size() < 4) return json_err("input_drag 需要 x1 y1 x2 y2 [steps]");
+        return input_drag(v[0], v[1], v[2], v[3], v.size() > 4 ? v[4] : 20);
+    }
+    if (fn.rfind("capture ", 0) == 0) {
+        // 路径可能含空格，但 max_width 一定是末尾的纯数字，据此从右往左切
+        std::string rest = fn.substr(8);
+        std::string path = rest;
+        int mw = 0;
+        size_t sp = rest.rfind(' ');
+        if (sp != std::string::npos) {
+            std::string last = rest.substr(sp + 1);
+            bool digits = !last.empty();
+            for (size_t i = 0; i < last.size(); ++i) {
+                if (!isdigit(static_cast<unsigned char>(last[i]))) { digits = false; break; }
+            }
+            if (digits) { path = rest.substr(0, sp); mw = std::atoi(last.c_str()); }
+        }
+        if (path.empty()) return json_err("capture 需要输出路径");
+        return capture_window(path, mw);
     }
     if (fn == "configure") {
         // 运行时改地址：游戏启动脚本可先写入，再 poll

@@ -10,30 +10,44 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Optional
 
 from .schema import SchemaError, validate
 
 
 @dataclass
 class ToolResult:
-    """工具返回值。text 是给模型看的正文；is_error 让客户端正确渲染失败。"""
+    """工具返回值。
+
+    text 是给模型看的正文；is_error 让客户端正确渲染失败；
+    images 承载图片（MCP 的 image content），用于"让模型看到画面"这类工具。
+    """
 
     text: str
     is_error: bool = False
     structured: Any = None
+    # [(mime_type, base64_data), ...]
+    images: list = field(default_factory=list)
 
     @classmethod
-    def ok(cls, text: str, structured: Any = None) -> "ToolResult":
-        return cls(text=text, is_error=False, structured=structured)
+    def ok(cls, text: str, structured: Any = None,
+           images: Optional[list] = None) -> "ToolResult":
+        return cls(text=text, is_error=False, structured=structured,
+                   images=images or [])
 
     @classmethod
     def fail(cls, text: str, structured: Any = None) -> "ToolResult":
         return cls(text=text, is_error=True, structured=structured)
 
     def to_mcp(self) -> dict:
+        content: list[dict] = []
+        # 图片放在文本之前：多模态模型通常先看画面再读说明
+        for mime, data in self.images:
+            content.append({"type": "image", "data": data, "mimeType": mime})
+        if self.text:
+            content.append({"type": "text", "text": self.text})
         payload: dict[str, Any] = {
-            "content": [{"type": "text", "text": self.text}],
+            "content": content or [{"type": "text", "text": ""}],
             "isError": self.is_error,
         }
         if self.structured is not None:
