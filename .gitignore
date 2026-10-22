@@ -20,6 +20,9 @@ build/
 
 # 构建产物（由 tools/pack_mod.sh 生成，不入库）
 game/mod/addons/*.pbo
+# 签名是**构建产物**（每次打包都要重签，见 docs/deploy.md）：
+# 与 PBO 一样不进版本控制。公钥 game/mod/keys/*.bikey 才是要跟代码走的配置。
+game/mod/addons/*.bisign
 game/mod/*.dll
 
 # 被运行中的游戏映射而删不掉的旧 DLL：Windows 允许改名让位、但不允许删除，
@@ -44,3 +47,10 @@ server/mpmissions/**/*.pbo
 server/mpmissions/**/*.bisign
 server/mpmissions/**/*.log
 server/mpmissions/**/*.rpt
+
+# 本机配置（由 a3mcp.example.json 复制而来）：含本机路径与密钥位置
+a3mcp.json
+
+# 签名私钥：绝不入库
+*.biprivatekey
+build/keys/

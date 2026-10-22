@@ -30,7 +30,7 @@ addons[]=
 randomSeed=3363241;
 class ScenarioData
 {
-	author="<user>";
+	author="arma3-mcp";
 	disabledAI=1;
 	respawn=2;
 	class Header

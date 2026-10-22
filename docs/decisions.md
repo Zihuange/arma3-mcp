@@ -166,7 +166,7 @@ MCP 面很小：`initialize` / `tools/list` / `tools/call` / 通知收尾。
 "Windows 能连 WSL"这条单向通路，代价是一串绕行：WSL IP 会变、服务端只能绑
 `0.0.0.0`、用不了 Windows 命名管道、多一层 NAT 转发。
 
-**决定**：MCP 服务器改在 **Windows 侧**运行（`H:\Program Files\Anaconda3\python.exe`）。
+**决定**：MCP 服务器改在 **Windows 侧**运行（`<Anaconda>\python.exe`）。
 游戏与 MCP 于是处在同一个网络栈：`127.0.0.1` 直连，命名管道也可用，
 不需要任何跨系统绕行。
 

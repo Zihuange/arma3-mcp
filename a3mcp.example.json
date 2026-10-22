@@ -1,0 +1,50 @@
+{
+  "_help": "复制本文件为 a3mcp.json 后按需修改。配置优先级：命令行 > 环境变量 > 本文件 > 内置默认。a3mcp.json 不会被提交到 git。",
+
+  "_help_server": "server：客户端↔MCP 的传输方式，以及 MCP↔游戏 DLL 的通道。",
+  "server": {
+    "_help_transport": "stdio（默认，推荐）= 由 MCP 客户端拉起本进程，无需端口；http = 手动启动，客户端用 url 连入（客户端无法执行本进程时用）。",
+    "transport": "stdio",
+
+    "_help_http": "仅 transport=http 时使用。只绑 127.0.0.1 时 WSL 访问不到，默认 0.0.0.0 是对的。",
+    "http_host": "0.0.0.0",
+    "http_port": 32128,
+
+    "_help_channel": "tcp（默认）= 监听等游戏内扩展 DLL 连入；null = 不监听（exec / config_* 将明确报未接通）。",
+    "channel": "tcp",
+    "tcp_host": "127.0.0.1",
+
+    "_help_tcp_port": "必须与 DLL 的默认端口一致（arma3_mcp_extension.cpp 里 std::string port = \"32131\"）。不一致时游戏侧连不上，且没有明显提示。",
+    "tcp_port": 32131,
+
+    "audit_log": "audit.jsonl",
+    "shot_dir": "build/shots"
+  },
+
+  "_help_gates": "gates：命令分级闸门。默认为最保守但仍可用的组合。",
+  "gates": {
+    "engine_read": true,
+    "engine_write": true,
+    "engine_exotic": false,
+    "engine_call": false,
+    "ui_control": true,
+    "input_inject": false,
+    "input_foreground_only": true,
+    "allow_input_text": true,
+    "allow_cheat": false,
+    "_help_profile": "置为 unrestricted 会开启无门控模式（所有命令放行，含硬禁）。风险自担，见 docs/safety.md。",
+    "profile": ""
+  },
+
+  "_help_toolkit": "toolkit：仅供 tools/modkit.py（打包/部署/签名）使用；服务端不读这一段。",
+  "toolkit": {
+    "_help_arma3_tools": "Arma 3 Tools 安装目录。留空则自动探测 Steam 常见位置。Windows 用 E:/... 形式，WSL 用 /mnt/e/... 形式。",
+    "arma3_tools": "",
+
+    "_help_sign_key": "签名私钥（.biprivatekey）路径。**绝不提交到 git**。留空则用 <arma3_tools>/DSSignFile/<name>.biprivatekey 或 ~/.arma3-mcp/ 下的密钥。",
+    "sign_key": "",
+
+    "_help_key_name": "密钥名（决定产物 .pbo.<name>.bisign 与 keys/<name>.bikey）。",
+    "key_name": "arma3-mcp"
+  }
+}

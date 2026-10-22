@@ -236,7 +236,7 @@ DLL 需放在可加载目录（mod 根，引擎优先探测 `<name>_x64.dll`）�
    "Autolnit is supported only for persistent missions!"。
 2. **任务必须放在 `<游戏目录>/mpmissions/`** —— `-profiles=` 只改 profile 位置，
    **不改任务搜索路径**（实测报错原文：`Can't find mission template: ... in 'mpmissions\'`）。
-   `start_server.bat` 现在每次启动都会自动把 `server/mpmissions/` 里的任务拷过去。
+   `手动启动专用服务器（见 README）` 现在每次启动都会自动把 `server/mpmissions/` 里的任务拷过去。
 3. **任务不能声明过时的 addon** —— 模板里的 `A3_Characters_F` 在现代版本对应不到
    pbo（现名 `characters_f.pbo`），引擎会以"依赖已删除的 DLC"为由拒绝加载。
    空场景不需要任何 addon 声明。
@@ -247,6 +247,64 @@ DLL 需放在可加载目录（mod 根，引擎优先探测 `<name>_x64.dll`）�
 无代码耦合），来源记在 provenance.md。BattlEye 已按 `BattlEye = 0;` 关闭。
 
 
+
+## 模组部署与签名（每次改模组都要走一遍）
+
+**改完 SQF 一定要重打包 + 重签 + 重新部署。** 三步少一步，都有一个**静默**失败：
+
+| 漏了哪步 | 现象 |
+|---|---|
+| 没重打包 | 游戏跑的还是旧 PBO —— 新函数不存在（Undefined variable），日志里不一定有提示 |
+| 重打包了但没重签 | `.bisign` 描述的是**旧内容**；`-verifySignatures` 环境下加载失败/被踢，而单机编辑器里**完全正常** |
+| 签了但只拷 PBO | 游戏目录里是「新 PBO + 旧签名」—— 同上，而且更难看出来（文件名都对） |
+
+所以这两步现在都固化成脚本，不要手工做：
+
+```bash
+bash tools/modkit.py pack --out build/pbo_out   # 打包 + 自动签名 + 官方复核
+bash tools/modkit.py deploy                     # 拷 PBO 与 bisign + 比对哈希 + 复核签名
+```
+
+### 打包时自动签名（`pack_mod.sh` 的 4.5/5 步）
+
+- 签名工具：`<Arma 3 Tools>/DSSignFile/DSSignFile.exe`
+- 私钥：默认 `<Arma 3 Tools>/DSSignFile/BTA.biprivatekey`，可用 `ARMA3_SIGN_KEY` 指定
+- **私钥不在仓库里**（也不该在）。缺私钥时脚本**直接失败**——出一个未签名包
+  比不出包更糟，因为它看起来是成功的。
+- 签完会做两道防呆：`bisign` 必须比 PBO 新；再用 `DSCheckSignatures.exe` 复核
+  （它判断的是**内容是否匹配**，不只看文件在不在）。
+- 确实不需要签名时：`--no-sign`（显示警告，请确认环境不校验签名再用）。
+
+### 部署（`deploy_mod.sh`）
+
+它做三件事，正好堵住手工拷贝的两个坑：
+
+1. **游戏在运行就拒绝** —— PBO 被占用时拷贝会失败；
+2. **PBO 与 `.bisign` 一起拷**，并**逐个**检查结果、拷完**比对哈希**；
+   （手工拷多个文件时 `$?` 只反映最后一条命令，实测 PBO 失败、bisign 成功，
+   脚本照样打印成功 —— 于是留下「旧 PBO + 新签名」）
+3. 用 `DSCheckSignatures.exe` 复核签名。
+
+`--check-only` 只校验当前部署状态，不拷贝。
+
+### 签名校验的判据（实测）
+
+`DSCheckSignatures.exe <被检查目录> <keys 目录>`：
+
+| 情况 | 输出 |
+|---|---|
+| 通过 | **无输出** |
+| 文件没签名 | `No signature found for <pbo>` |
+| 签名与内容不匹配 | `Signature <pbo>.<key>.bisign is wrong` |
+
+**判据用"有没有输出"，不要猜错误措辞** —— 本仓库的部署脚本最初只匹配 `invalid`，
+于是 `is wrong` 被漏掉、把失败报成了成功。
+
+### 公钥分发
+
+- 客户端：`.bikey` 放进游戏的 `keys/`（本仓库在 `game/mod/keys/BTA.bikey`）；
+- 专用服务器：放进服务器的 `keys/`，并在 `server.cfg` 里 `verifySignatures = 2`;
+- **客户端与服务器必须用同一个密钥对**，否则客户端会被踢。
 
 ## 故障排查
 

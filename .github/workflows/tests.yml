@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # 零第三方依赖：不需要 pip install
+      - name: Unit tests
+        run: python -m unittest discover -s tests -t . -q
+      - name: Independence checks
+        # 数据可重建一项需要本机的 SQFLint 扩展；CI 上没有，脚本会报
+        # "环境不足"并继续（退出码 0）。其余项照常校验。
+        run: python tools/check_independence.py

@@ -30,6 +30,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import time
 
 from mcpcore.registry import Registry, ToolResult
@@ -42,6 +43,24 @@ DEFAULT_SHOT_DIR = os.path.join(
 
 def _shot_dir() -> str:
     return os.environ.get("A3MCP_SHOT_DIR") or DEFAULT_SHOT_DIR
+
+
+def _to_win_path(path: str) -> str:
+    """给**游戏进程内的 DLL** 用的路径（它只认 Windows 形式）。
+
+    按平台判断，不写死盘符：
+      · MCP 跑在 Windows：路径本来就是 Windows 语义，规范化即可；
+      · MCP 跑在 WSL：`/mnt/<盘符>/...` → `<盘符>:\\...`。
+
+    ⚠ 这里曾写死 `path.replace("/mnt/h/", "H:\\")` —— 项目不在 H 盘时会得到
+    一个不存在的路径，而 DLL 只表现为"文件写不出来"，**不报错也不提示**。
+    """
+    if os.name == "nt":
+        return os.path.normpath(os.path.abspath(path))
+    m = re.match(r"^/mnt/([A-Za-z])/(.*)$", path)
+    if m:
+        return "%s:\\%s" % (m.group(1).upper(), m.group(2).replace("/", "\\"))
+    return path.replace("/", "\\")
 
 
 def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
@@ -437,8 +456,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
 
         name = "shot_%s.png" % time.strftime("%H%M%S")
         path = os.path.join(out_dir, name)
-        # DLL 在游戏进程内，用的是 Windows 路径
-        win_path = path.replace("/mnt/h/", "H:\\").replace("/", "\\")
+        # DLL 在游戏进程内，用的是 Windows 路径。
+        # 不假设盘符：曾经写死 `/mnt/h/` → `H:\`，项目换盘就静默失败。
+        win_path = _to_win_path(path)
 
         max_width = args.get("max_width", 1280)
         reply = chan.send({"cmd": "capture", "args": [win_path, max_width]},

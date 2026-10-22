@@ -1,0 +1,92 @@
+# NOTICE
+
+arma3-mcp — 把 Arma 3 引擎能力面暴露给 AI Agent 的 MCP 服务器。
+代码以 **MIT** 许可发布，全文见 `LICENSE`。
+
+本文件说明**第三方内容与来源**，以及本仓库刻意**不包含**什么。
+
+---
+
+## 1. 命令定义（`data/commands.json.xz`）
+
+本仓库自带的命令库包含 5181 条引擎命令与官方函数的结构性信息：
+
+- 命令名、类型（command / function）、来源（core / CBA / ACE）
+- 调用签名（参数名与类型、返回类型）
+- 版本兼容性
+
+**这些是事实性数据**（命令叫什么、参数是什么类型），不构成受版权保护的表达。
+
+其原始来源是 **Bohemia Interactive 官方社区 wiki**
+（<https://community.bistudio.com/wiki/>），经由编辑器扩展
+**SQFLint**（`skacekachna.sqflint`，MIT 许可）的 `definitions/documentation.json`
+提取。
+
+### 本仓库不包含 wiki 的描述正文
+
+早期版本曾把 wiki 的命令描述截取进数据（`d` 字段）。**现已移除**，原因有二：
+
+1. 描述文本属于受版权保护的表达，其使用受 BI 的内容许可约束
+   （见 <https://community.bistudio.com/wiki/Licenses>），与 MIT 不兼容；
+2. 截断到 400 字符的描述本身也不完整。
+
+需要命令说明时，`cmd_info` 会给出对应 wiki 页面的链接：
+
+```
+https://community.bistudio.com/wiki/<命令名>
+```
+
+**链接由命令名直接拼出**（映射是确定性的），因此仓库既不分发描述，也不必存储 URL。
+
+---
+
+## 2. SQF 静态检查与命令签名核实
+
+开发与打包流程会调用外部 SQF 静态检查器（可选）。它**不属于运行时依赖**：
+缺失时打包脚本会明确报错，而不是静默跳过。
+
+本仓库的 SQF 代码、Python 代码、C++ 扩展均为自写。
+
+---
+
+## 3. DIK 扫描码表（`data/dik.json`）
+
+Arma 3 的 `input_key` 使用 DirectInput 扫描码（DIK），不用虚拟键码。
+本仓库的码表取自 **Windows SDK 10.0.22621.0 的 `um/dinput.h`** 中 `#define DIK_*`
+的常量定义。
+
+键码是**事实性常量**（例如 `DIK_ESCAPE = 0x01`），为互操作目的引用，
+不包含该头文件的任何实现或注释正文。
+
+---
+
+## 4. Windows 平台 API
+
+游戏侧扩展（`game/extension/src/arma3_mcp_extension.cpp`）只使用
+**Windows 系统 API**：Winsock（`ws2_32`）用于与 MCP 通信，GDI+（`gdiplus`）
+用于截图编码。
+
+**没有引入任何第三方 C/C++ 库**，因此不涉及它们的许可。
+
+---
+
+## 5. 签名密钥
+
+`game/mod/keys/*.bikey` 是**公钥**，随模组分发（签名校验需要它）。
+对应的**私钥**（`*.biprivatekey`）**绝不在本仓库中**，也不应被分发。
+
+若你要发布自己的构建，请用 Arma 3 Tools 的 `DSCreateKey.exe` 生成**自己的**密钥对：
+
+```bat
+dsCreateKey your_authority_name
+```
+
+然后把你的 `.bikey` 放进 `game/mod/keys/`，并用 `tools/modkit.py pack`
+（配置里指定私钥路径）签名。
+
+---
+
+## 6. 商标
+
+"Arma"、"Arma 3"、"Bohemia Interactive" 等为 Bohemia Interactive a.s. 的商标。
+本仓库不是 BI 官方产品，也未获其背书；仅在描述兼容性时以事实方式提及。

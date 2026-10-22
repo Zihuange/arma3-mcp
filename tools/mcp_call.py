@@ -29,6 +29,23 @@ import sys
 import urllib.error
 import urllib.request
 
+def _safe_console() -> None:
+    """让 CLI 输出在 Windows 中文控制台（GBK）下不崩。
+
+    中文 Windows 的默认 stdout 编码是 **GBK**，而 `✓` / `✗` / `⚠` 不在 GBK 里：
+    直接 print 会抛 `UnicodeEncodeError: 'gbk' codec can't encode character`。
+    这是分发后最常见的环境（中文用户），CLI 一跑就崩。
+
+    只加 `errors="replace"`、**不改 encoding**：
+      · GBK 控制台：符号显示为 `?`，不崩、不乱码；
+      · UTF-8 终端：符号正常显示。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass          # Python < 3.7 或流不支持：保持原样
+
 DEFAULT_PORT = 32128
 
 
@@ -130,4 +147,5 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    _safe_console()
     sys.exit(main())

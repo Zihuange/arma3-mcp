@@ -16,7 +16,7 @@
 | 给 SQF 白名单 push 一个元素 | 列表从"空"变"非空" → **意外启用全量白名单校验**，全部命令被拒 | 名单的空/非空是有意开关，豁免写在检查处 |
 | `_p0` 当变量用 | 带参表达式全部返回 `nil`（回执 ok=true） | MCP 侧展开成 `(_this select N)` |
 
-**排查这类问题的第一动作**：`grep -n "Error" <最新 RPT>`（路径见 `docs/onmachine.md`）。
+**排查这类问题的第一动作**：`grep -n "Error" <最新 RPT>`（路径见 `docs/local-setup.md`）。
 顶层错误信息通常在游戏侧，不在 MCP 回执里。
 
 ## 零之二、文档就是接口：过时描述会把别的会话带偏
@@ -68,6 +68,72 @@ python3 tools/mcp_call.py config_tree --args '{"root": "CfgFunctions"}'
 
 ---
 
+## 零之四、开源分发重构（2026-10-22）
+
+为公开发布（GitHub + 分发）做的一轮改造。**入口与脚本形态变了，读旧文档时注意**。
+
+### 现在的入口（只有两个）
+
+```bash
+python start.py                  # 启动 MCP（stdio 默认；--http 用于跨系统）
+python tools/modkit.py pack      # 打包 + 签名 + 校验
+python tools/modkit.py deploy    # 部署（PBO 与 .bisign 一起，含签名复核）
+```
+
+- **`start.py`** 读 `a3mcp.json`（从 `a3mcp.example.json` 复制）→ 映射成环境变量 →
+  启动服务。服务端代码没改：环境变量仍是唯一接口。
+- **`start_windows.bat`** 已缩成 3 行封装（只找 python + 转调 `start.py --http`）。
+- **已删除**：`start_game.bat`、`server/start_server.bat`（挂载模组改为 README 说明）、
+  `pack_mod.sh`、`deploy_mod.sh`（被 `modkit.py` 取代）、`gen_dispatch.py`
+  （静态分发方案已被动态表达式取代）、`check_exports.py`、`downgrade_annotations.py`、
+  `verify_windows.py`、`dll_smoke.py`、`sqf_syntax_check.py`、`.wslsrv.out`。
+
+### 连接方式（两条独立链路）
+
+| 链路 | 支持 | 默认 |
+|---|---|---|
+| 客户端 ↔ MCP | `stdio` / `http` | **stdio**（同机时客户端直接拉起，零配置） |
+| MCP ↔ 游戏 DLL | `tcp` / `null` | `tcp`（DLL 主动连 32131） |
+
+`pipe` 只存在于历史注释，**没有实现**——旧文档提到它的一律以本表为准。
+
+### 许可与数据（重要）
+
+- 代码 **MIT**（`LICENSE`）；第三方来源见 `NOTICE`。
+- **命令库不再包含 BI wiki 的描述正文**（`d` 字段已删，schema 2）。
+  `cmd_info` 改为给 wiki 链接（`https://community.bistudio.com/wiki/<命令名>`）。
+  **别把它加回去**：`tests/test_data.py` 有反向断言，加了就红。
+- 数据体积因此从 309KB 降到 161KB。
+
+### 签名密钥换了
+
+- 现在是 **`arma3-mcp`** 密钥对（旧的是 `BTA`，已移除）。
+- 公钥入库：`game/mod/keys/arma3-mcp.bikey`；私钥在本机（`build/keys/`，已 gitignore）。
+- 分发者**应生成自己的密钥**：`DSCreateKey <名字>`，然后公钥随发布、私钥不外传。
+
+### 本机信息
+
+- `docs/onmachine.md` → **`docs/local-setup.md`**（开头已声明"作者本机环境，非安装指南"）。
+- 现状文档里的本机路径已占位化（`<repo>` / `<user>` / `<Anaconda>` 等）。
+- **`docs/decisions.md` 与 `history.md` 保持原样**：它们是历史记录，出现旧文件名与
+  旧路径是事实，改了就失真。
+
+### 一个刻意的决定：**没有重写 git 历史**
+
+历史里能看到作者本机用户名与少量二进制（旧 PBO/DLL）。评估后选择不清理：
+
+- `.git` 只有 5.8MB，体积不是问题；
+- 历史里**没有真实凭据**（`biprivatekey` 的命中来自 `.gitignore` 规则与文档提及）；
+- 重写会改变全部 commit hash，而 `decisions.md` 里大量"见 D 系列/某提交"的引用靠
+  的是**内容**不是 hash，但审计与追溯的连续性会受影响；
+- `git filter-repo` 在本机不可用。
+
+如果将来确实要清，步骤是：备份 `.git` → `pip install git-filter-repo` →
+`git filter-repo --path-glob '*.pbo' --path-glob '*.dll' --invert-paths` →
+`--replace-text` 替换用户名 → 全量测试 + 自检验证。
+
+---
+
 ## 一、手上的活儿：哪几件已完成、哪件没做
 
 方案：「独立性整改 + 安全模型：把 `call` 从硬禁改为结构化白名单」（已批准）。
@@ -109,6 +175,7 @@ BIS 的函数有几千个，全量倾泻会把回执撑爆。
 | **`reply.result` 就是负载** | 外面**没有** `{"ok":...}` 包装。`config_tools` 里 `data = reply.result` 直接用；我加过一次多余的 ok 检查，导致 SQF 明明 `ack ok=true`、MCP 侧却报"被拒绝：未知原因" |
 | **`@reg.tool` 与 `def` 之间不能插东西** | 插了会让装饰器套到别的函数上，症状是 `xxx() takes 0 positional arguments but 1 was given` |
 | **DLL 有两条入口** | MCP 直连（`run_native`，走 JSON）与 SQF 转发（`RVExtension` 的字符串形式）。**改签名两处都要同步** |
+| **改完模组要"打包→重签→部署"三件套** | `tools/modkit.py pack --out build/pbo_out`（自动签名）→ `tools/modkit.py deploy`（PBO+bisign 一起拷并复核）。漏任一步都是**静默**失败：PBO 没换=新函数不存在；没重签或只拷 PBO=签名与内容对不上（单机正常、服务器炸）。详见 `deploy.md` |
 | **改完 SQF 必须重跑检查** | `python3 .dsh/skills/arma3-sqf/scripts/sqfcheck.py <file>` 与 `sqfapi.py check-file <file>`。⚠ **SQFLint 抓不到**：`then { exitWith {...} }` 的"缺少 ;"、两侧切分不一致、`_wl` 空/非空语义。这些只能靠离线契约测试或引擎日志 |
 | **改 SQF 校验逻辑前先跑离线镜像** | `tests/test_expr_guard.py::TestSqfCallTargetContract` 是 SQF `_targetSlotOf` 的 Python 照抄版。改了 SQF 那段就同步改它并先跑测试，**对不上就别上机** |
 | **切分规则只有一处定义** | `knowledge/expr.py::split_tokens`。SQF 的 `_splitExpr` 必须与它逐字符等价（分隔符全部丢弃，不留 token） |
@@ -117,17 +184,17 @@ BIS 的函数有几千个，全量倾泻会把回执撑爆。
 ## 三、环境状态（开新会话时可先复核）
 
 ```
-游戏        : 运行中（本轮验证完留在编辑器里）
-MCP 服务    : 运行中，带 A3MCP_ENGINE_CALL=1（用 start_windows.bat 启动）
+游戏        : 未运行
+MCP 服务    : 未运行（启动方式：python start.py  或  start_windows.bat）
 专用服务器  : 已关闭
-测试        : 305 项通过
-部署的 PBO  : 与 game/mod/addons/a3mcp/ 源码一致（64813 字节那一版）
+测试        : 345 项通过
+部署的 PBO  : 由 tools/modkit.py pack 产出并签名（密钥 arma3-mcp）
 ```
 
 ⚠ 部署到 `game/mod/addons/a3mcp.pbo` 时游戏会占用它。`pack_mod.sh` 会自动检测并报错；
 要先把游戏完全退掉再拷（`taskkill` 未必够——游戏常以更高权限运行，那时只能请人来关）。
 
-启动命令：`<repo>\start_windows.bat`（MCP）、`start_game.bat`（游戏）。
+启动命令：`<repo>\start_windows.bat`（MCP）、`手动挂载（见 README「挂载模组」）`（游戏）。
 游戏进编辑器可以用宏一步做完（见下），不必手动点。
 
 ## 四、最近做完的能力（可能对调试有用）
@@ -145,7 +212,7 @@ MCP 服务    : 运行中，带 A3MCP_ENGINE_CALL=1（用 start_windows.bat 启�
 1. **视觉验证仍不可靠**：截图工具能返回 PNG、`read_image` 也能读进来，但**我读不出图中内容**
    （无法从中提取文字或坐标）。所以"点击后画面变成什么样"仍无法确认；
    Eden 的轴拖动 / Scaling / Vertical Mode 三项仍记为未测。
-2. **`start_game.bat` 返回码 127**：游戏能正常启动，但脚本退出码异常。
+2. **`手动挂载（见 README「挂载模组」）` 返回码 127**：游戏能正常启动，但脚本退出码异常。
 3. **`fn_validate` 的纵深防御只是"能跑"**：它现在加载正常、会拒绝被拒的东西（已实测），
    但**没有针对它的验证用例**——它的判据在 SQF 里，MCP 侧的测试覆盖不到。
    要补的话，思路同 `TestSqfCallTargetContract`：离线镜像它的判据。

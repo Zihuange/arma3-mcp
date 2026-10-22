@@ -21,6 +21,23 @@ import re
 import subprocess
 import sys
 
+def _safe_console() -> None:
+    """让 CLI 输出在 Windows 中文控制台（GBK）下不崩。
+
+    中文 Windows 的默认 stdout 编码是 **GBK**，而 `✓` / `✗` / `⚠` 不在 GBK 里：
+    直接 print 会抛 `UnicodeEncodeError: 'gbk' codec can't encode character`。
+    这是分发后最常见的环境（中文用户），CLI 一跑就崩。
+
+    只加 `errors="replace"`、**不改 encoding**：
+      · GBK 控制台：符号显示为 `?`，不崩、不乱码；
+      · UTF-8 终端：符号正常显示。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass          # Python < 3.7 或流不支持：保持原样
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 本机其它 Arma 代码库：本仓库可以参考它们的**结论**，但绝不能在运行期依赖
@@ -187,15 +204,15 @@ def check_hardcoded_paths() -> list[str]:
                     target = match.group(1)
                     if target.startswith(ALLOWED_PATH_PREFIXES):
                         continue
-                    if target.startswith("<repo>"):
-                        continue   # 自己仓库内的路径不算外部依赖
+                    if target.startswith(REPO):
+                        continue   # 自己仓库内的路径不算外部依赖（平台无关）
                     problems.append(f"{rel}:{lineno} 硬编码外部路径 {target}")
     return problems
 
 
 # 启动脚本里的**本仓库**绝对路径 —— 另一种独立性缺陷，且性质不同。
 #
-# check_hardcoded_paths 查的是"指向别的仓库"，查不到这里：`<repo>`
+# check_hardcoded_paths 查的是"指向别的仓库"，查不到这里：`<repo>` 这种指向自己的绝对路径
 # 指的正是自己，所以它不算外部依赖，却让仓库一旦被搬动/改名，脚本就在别的机器上
 # 静默找不到自己的文件。用 `%~dp0` 自定位可以完全消除这一项。
 #
@@ -409,4 +426,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    _safe_console()
     sys.exit(main())

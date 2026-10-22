@@ -222,6 +222,24 @@ def _normalize_type(raw: str) -> tuple[str, bool]:
     return _UNKNOWN, False
 
 
+# 与 tools/build_commands.py::SCHEMA 必须一致。
+# 分开定义是刻意的：读方不该 import 写方（那是开发工具）；但两边漂移时
+# 报错信息会明确指出，不会静默用错格式。
+EXPECTED_SCHEMA = 2
+
+WIKI_BASE = "https://community.bistudio.com/wiki/"
+
+
+def wiki_url(name: str) -> str:
+    """命令名 → BI wiki 页面链接。
+
+    映射是**确定性**的（wiki 的页面路径就是命令名），所以数据里不必存 URL，
+    运行时拼出来即可。这也是本仓库**不分发 wiki 描述正文**的替代方案：
+    需要说明时给链接，而不是复制受版权保护的文本。
+    """
+    return WIKI_BASE + (name or "").strip()
+
+
 class CommandIndex:
     """命令库的读取与查询。惰性加载，进程内只解压一次。"""
 
@@ -247,8 +265,14 @@ class CommandIndex:
                 f"请先运行：python3 tools/build_commands.py")
         with lzma.open(self.path, "rb") as fh:
             payload = json.loads(fh.read().decode("utf-8"))
-        if payload.get("schema") != 1:
-            raise ValueError(f"命令库 schema 版本不支持：{payload.get('schema')}")
+        # 只认**当前**版本：旧版数据（含 d 字段的 schema 1）不兼容，
+        # 因为读取方已经不再期望描述文本。报错时直接给出重建命令，
+        # 而不是让人猜"为什么读不了库"。
+        if payload.get("schema") != EXPECTED_SCHEMA:
+            raise ValueError(
+                "命令库 schema 版本不匹配：数据是 %r，本代码要 %d。\n"
+                "请重跑：python3 tools/build_commands.py"
+                % (payload.get("schema"), EXPECTED_SCHEMA))
         self._records = payload["records"]
         self._meta = payload["generated"]
 
@@ -306,8 +330,6 @@ class CommandIndex:
                 score = 1
             elif q in name:
                 score = 2
-            elif q in (rec["d"] or "").lower():
-                score = 3
             else:
                 continue
             hits.append((score, rec))
@@ -317,7 +339,9 @@ class CommandIndex:
             "type": r["ty"],
             "source": r["src"],
             "family": self.family_of(r["n"]),
-            "summary": (r["d"] or "").split("\n")[0][:160],
+            # 摘要用**签名**首行，不再是 wiki 描述：数据里已不含描述文本
+            # （版权原因，见 NOTICE）。需要说明请按 wiki_url() 取原文。
+            "summary": (r["sx"][0]["c"] if r.get("sx") else ""),
         } for _, r in hits[:limit]]
 
     def get(self, name: str) -> Optional[dict]:
@@ -399,7 +423,8 @@ def parse_arg(arg: dict) -> dict:
         "type_known": known,
         "optional": optional,
         "default": default,
-        "desc": (arg.get("d") or "")[:120],
+        # 参数描述同样不随数据分发（版权原因）；保留键以便渲染层统一处理
+        "desc": "",
     }
 
 

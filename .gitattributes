@@ -1,0 +1,19 @@
+# 行尾：Windows 脚本必须 CRLF（cmd.exe 按 OEM 码页读），其余统一 LF。
+# 这一条很重要：.bat 被检出成 LF 后，cmd.exe 会把整行当命令名，直接失效。
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.sh   text eol=lf
+*.py   text eol=lf
+*.sqf  text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.yml  text eol=lf
+
+# 二进制：不做行尾转换
+*.pbo     binary
+*.bisign  binary
+*.bikey   binary
+*.biprivatekey binary
+*.dll     binary
+*.xz      binary
+*.png     binary

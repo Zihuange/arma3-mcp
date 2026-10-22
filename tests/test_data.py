@@ -144,7 +144,9 @@ class TestLibraryIntegrity(unittest.TestCase):
     def test_schema_version_and_meta(self):
         with lzma.open(DATA, "rb") as fh:
             payload = json.loads(fh.read().decode("utf-8"))
-        self.assertEqual(payload["schema"], 1)
+        # 引用代码里的常量，避免"改了格式忘了改测试"再来一次
+        from knowledge.index import EXPECTED_SCHEMA
+        self.assertEqual(payload["schema"], EXPECTED_SCHEMA)
         gen = payload["generated"]
         for key in ("source_sha256", "records", "builder", "at"):
             self.assertIn(key, gen)
@@ -156,12 +158,31 @@ class TestLibraryIntegrity(unittest.TestCase):
         self.assertEqual(self.idx.count(), 5181)
 
     def test_every_record_has_required_fields(self):
+        """必需字段：命令名 / 类型 / 签名 / 来源。
+
+        `d`（wiki 描述正文）**刻意不在其中** —— 它受版权保护（BI wiki），
+        与 MIT 分发不兼容，已在 schema 2 移除。见 NOTICE。
+        """
         missing = []
         for key, rec in self.idx.records.items():
-            for field in ("n", "ty", "d", "sx", "src"):
+            for field in ("n", "ty", "sx", "src"):
                 if field not in rec:
                     missing.append((key, field))
         self.assertEqual(missing, [], f"字段缺失：{missing[:5]}")
+
+    def test_no_copyrighted_description_in_data(self):
+        """反向断言：数据里**不得**再出现描述正文。
+
+        这一条是防回归的——有人"顺手"把 wiki 描述加回来，就等于把
+        版权问题一起加回来。需要说明时由 cmd_info 给 wiki 链接。
+        """
+        offenders = [k for k, r in self.idx.records.items() if r.get("d")]
+        self.assertEqual(offenders, [], f"仍有描述字段：{offenders[:5]}")
+        for key, rec in self.idx.records.items():
+            for sig in rec.get("sx") or []:
+                for arg in sig.get("a") or []:
+                    self.assertNotIn("d", arg,
+                                     f"{key} 的参数仍带描述字段")
 
     def test_every_record_has_at_least_one_signature(self):
         empty = [k for k, r in self.idx.records.items() if not r.get("sx")]

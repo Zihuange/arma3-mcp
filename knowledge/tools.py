@@ -15,7 +15,7 @@ from typing import Any, Optional
 from guard import classify
 from mcpcore.registry import Registry, ToolResult
 from .capabilities import CapabilityMatrix
-from .index import CommandIndex, check_call, signature_variants
+from .index import CommandIndex, check_call, signature_variants, wiki_url
 
 ENTITY_NOTE = (
     "游戏实体（Object/Group/Control…）用**单元素数组**承载，例如 "
@@ -44,10 +44,10 @@ def render_info(rec: dict, idx: CommandIndex, name: str) -> str:
     if games:
         lines.append(f"出现于：{', '.join(games)}")
     lines.append("")
-    desc = (rec.get("d") or "").strip()
-    if desc:
-        lines.append("说明：" + desc.replace("\n", " ")[:600])
-        lines.append("")
+    # 说明给**链接**而不是正文：本仓库不分发 BI wiki 的描述文本（见 NOTICE）。
+    # 链接由命令名直接拼出，确定性映射，不需要在数据里存 URL。
+    lines.append("说明：见 wiki 原文 → " + wiki_url(rec["n"]))
+    lines.append("")
     variants = signature_variants(rec)
     if not variants:
         lines.append("⚠ 该命令没有签名数据。不要凭记忆拼参数——请查 wiki 原文。")

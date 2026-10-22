@@ -1,5 +1,10 @@
 # 上机清单（游戏侧联调）
 
+> **这份文档记录的是作者本机的实测环境，供对照参考，不是安装指南。**
+> 路径与版本只用于说明"在什么环境下验证过"；你机器上的位置会不同。
+> 需要安装步骤请看 [`README.md`](../README.md) 的「安装」一节。
+
+
 > ⚠ **2026-10-18 端口变更**：游戏连接通道的默认端口已由 `32131` 改为 **`32132`**
 > （原 32131 被 `mcp-rimworld-bridge` 经 `wslrelay.exe` 占用，会导致本通道静默退回 `null`）。
 > 已同步修改并重新编译：`game/extension/src/arma3_mcp_extension.cpp` 默认值、`start_windows.bat`、
@@ -20,7 +25,7 @@
 
 ```bat
 cd /d <repo>
-"H:\Program Files\Anaconda3\python.exe" tools\dll_smoke.py game\mod\arma3_mcp.dll 32199
+# （DLL 冒烟测试脚本已随精简移除；现在用 tools/modkit.py check 校验产物）
 ```
 
 它验证的不只是"能加载、能握手"，还有两条最容易搞混的**路由**：
@@ -35,7 +40,7 @@ cd /d <repo>
 `DllMain` 开始拨默认端口，而 MCP 只保留一个活跃连接——照默认值跑会把正在运行的
 游戏踢下线。脚本会自动复制一份并改写默认端口，所以真实服务不受影响（D18）。
 
-本机使用的工具链：**Visual Studio Community 2022**（`H:\Program Files\Microsoft Visual Studio\2022\Community`，
+本机使用的工具链：**Visual Studio Community 2022**（`<VS2022 安装目录>`，
 MSVC 14.34）＋ CMake 3.25。
 
 ---
@@ -138,7 +143,7 @@ game/mod/
 用仓库自带的启动器（它总会挂上模组，并已处理好 `-init=`）：
 
 ```bat
-<repo>\start_game.bat
+<repo>\手动挂载（见 README「挂载模组」）
 ```
 
 需要把 MCP 地址告诉 DLL 时，在游戏启动后、进任务前执行一次：
@@ -158,7 +163,7 @@ game/mod/
 | `-init=`（启动参数） | 游戏启动时，主菜单阶段 | 加载 DLL；**尝试**拉起执行器 |
 | `preInit` / `postInit`（模组 CfgFunctions） | **任务加载时**才触发 | 启动执行器 |
 
-`start_game.bat` 的 `-init=` 做两件事：
+`手动挂载（见 README「挂载模组」）` 的 `-init=` 做两件事：
 
 1. **加载 DLL**——截图／输入／窗口信息立刻可用，不需要任务；
 2. **发一组同步探针**，把"主菜单阶段到底有什么可用"问清楚，结果经
@@ -189,7 +194,7 @@ game/mod/
 启动时立刻就能看出来。
 
 **为什么不写引号**：`-init=` 的字符串要经过 cmd.exe 与引擎两轮参数解析，
-里面出现的引号会被吃掉（实测 RPT 报 `Error: missing '`）。因此 `start_game.bat`
+里面出现的引号会被吃掉（实测 RPT 报 `Error: missing '`）。因此 `手动挂载（见 README「挂载模组」）`
 里所有字符串（扩展名、函数名、探针标记）都用 `toString [字符码]` 构造，
 字符码集中定义在文件里并逐条注释。改这段代码前先读
 [`decisions.md`](decisions.md) 的 D19 与 D20。

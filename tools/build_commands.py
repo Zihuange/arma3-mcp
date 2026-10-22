@@ -34,17 +34,44 @@ import os
 import sys
 from datetime import datetime, timezone
 
+def _safe_console() -> None:
+    """让 CLI 输出在 Windows 中文控制台（GBK）下不崩。
+
+    中文 Windows 的默认 stdout 编码是 **GBK**，而 `✓` / `✗` / `⚠` 不在 GBK 里：
+    直接 print 会抛 `UnicodeEncodeError: 'gbk' codec can't encode character`。
+    这是分发后最常见的环境（中文用户），CLI 一跑就崩。
+
+    只加 `errors="replace"`、**不改 encoding**：
+      · GBK 控制台：符号显示为 `?`，不崩、不乱码；
+      · UTF-8 终端：符号正常显示。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass          # Python < 3.7 或流不支持：保持原样
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_OUT = os.path.join(REPO, "data", "commands.json.xz")
-SCHEMA = 1
+# 2 = 移除了 d（wiki 描述正文）。原因：描述文本受版权保护（BI wiki 默认
+# CC BY-SA），与 MIT 分发不兼容；而且截断到 400 字符也不完整。
+# 需要说明时由 cmd_info 给出 wiki 链接（见 knowledge/index.py::wiki_url）。
+SCHEMA = 2
 
 # 自动探测顺序：先环境变量，再编辑器扩展（多个版本时取版本号最大者）。
 # 之所以支持环境变量：来源可能被更新或换位置，但不该逼迫脚本改动。
 ENV_SOURCE = "ARMA3_MCP_CMD_SOURCE"
 GLOBS = [
+    # 通用：当前平台家目录（Windows 是 C:\\Users\\<user>，WSL 是 /home/<user>）
+    os.path.expanduser(os.path.join(
+        "~", ".vscode", "extensions",
+        "skacekachna.sqflint-*", "definitions", "documentation.json")),
+    os.path.expanduser(os.path.join(
+        "~", ".vscode-insiders", "extensions",
+        "skacekachna.sqflint-*", "definitions", "documentation.json")),
+    # WSL：Windows 侧编辑器的扩展目录
     "/mnt/c/Users/*/.vscode/extensions/skacekachna.sqflint-*/definitions/documentation.json",
     "/mnt/c/Users/*/.vscode-insiders/extensions/skacekachna.sqflint-*/definitions/documentation.json",
-    os.path.expanduser("~/.vscode/extensions/skacekachna.sqflint-*/definitions/documentation.json"),
 ]
 
 
@@ -91,7 +118,6 @@ def parse_syntaxes(raw: dict) -> list[dict]:
             args.append({
                 "n": arg.get("name", ""),
                 "t": arg.get("type", ""),
-                "d": (arg.get("description") or "")[:200],
             })
         ret = syn.get("returns")
         out.append({
@@ -124,7 +150,6 @@ def build(source: str) -> dict:
         records[key.lower()] = {
             "n": name,
             "ty": entry.get("type", ""),
-            "d": (entry.get("description") or "")[:400],
             "sx": parse_syntaxes(entry),
             "compat": parse_compat(entry),
             "src": entry.get("source", ""),
@@ -241,4 +266,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    _safe_console()
     sys.exit(main())
