@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 from .schema import SchemaError, validate
 
@@ -67,7 +67,7 @@ class Registry:
             raise ValueError(f"工具名重复：{tool.name}")
         self._tools[tool.name] = tool
 
-    def tool(self, name: str, description: str, input_schema: dict | None = None,
+    def tool(self, name: str, description: str, input_schema: Optional[dict] = None,
              **meta: Any) -> Callable:
         """装饰器形式的注册。"""
         def deco(fn: Callable[[dict], ToolResult]) -> Callable:
@@ -81,7 +81,7 @@ class Registry:
             return fn
         return deco
 
-    def get(self, name: str) -> Tool | None:
+    def get(self, name: str) -> Optional[Tool]:
         return self._tools.get(name)
 
     def names(self) -> list[str]:

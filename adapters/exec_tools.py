@@ -29,107 +29,79 @@ HARD_BATCH_MAX = 32
 def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # noqa: ANN001
     """注册执行层工具。chan 由调用方注入（P0 是 NullChannel）。"""
 
-    def _prepare(cmd: str, args: list) -> tuple[dict | None, ToolResult | None]:
-        """查库 + 校验 + 过闸门 + 构造负载。失败返回 (None, 错误结果)。"""
-        rec = idx.get(cmd)
-        if rec is None:
-            cands = idx.prefix_candidates(cmd)
-            text = f"命令库中没有 {cmd!r}，拒绝执行（不猜命令名）。"
-            if cands:
-                text += "\n相近的名字：" + "、".join(cands)
-            return None, ToolResult.fail(text)
-
-        verdict = gu.check(rec["n"])
-        if not verdict.allowed:
-            return None, ToolResult.fail(
-                f"闸门拒绝执行 {rec['n']}：{verdict.reason}"
-                + (f"\n所需开关：{verdict.needs_flag}=1" if verdict.needs_flag else ""))
-
-        check = check_call(rec, args)
-        if not check["ok"]:
-            lines = [f"{rec['n']} 参数校验不通过，未执行。各调用形式的拒绝原因："]
-            for r in check["results"]:
-                lines.append(f"  · {r['code']}")
-                for why in r["reasons"]:
-                    lines.append(f"      ✗ {why}")
-            lines.append("\n先用 cmd_info 看签名，再用 cmd_check 试参数。")
-            return None, ToolResult.fail("\n".join(lines))
-
-        variants = signature_variants(rec)
+    def _check_expr(expr: str, argc: int) -> ToolResult | None:
+        """校验表达式（这一步在 MCP 侧先做一遍，游戏侧还会再校验一次）。"""
+        from knowledge.expr import ExprError, validate, whitelist_from_library
         try:
-            built = build_command(rec["n"], args, variants, check["matched_index"])
-        except SerializeError as exc:
-            return None, ToolResult.fail(f"参数无法序列化：{exc}")
+            validate(expr, argc, whitelist_from_library())
+        except ExprError as exc:
+            return ToolResult.fail(
+                "表达式校验未通过：%s\n"
+                "表达式里每个标识符必须是 _p0.._pN 占位符，或白名单内的引擎命令；"
+                "禁止分号（多语句）与字符串字面量（参数必须是数据）。" % exc)
+        return None
 
-        return {"record": rec, "check": check, "built": built,
-                "verdict": verdict}, None
-
-    def _do_exec(cmd: str, args: list, dry_run: bool,
+    def _do_exec(expr: str, args: list, dry_run: bool,
                  timeout_s: float) -> ToolResult:
-        prepared, err = _prepare(cmd, args)
-        if err is not None:
-            return err
-        assert prepared is not None
-        built = prepared["built"]
-        verdict = prepared["verdict"]
+        if not isinstance(expr, str) or not expr.strip():
+            return ToolResult.fail("缺少 expr（要执行的表达式文本）")
+        if not isinstance(args, list):
+            return ToolResult.fail("args 必须是数组")
+
+        bad = _check_expr(expr, len(args))
+        if bad is not None:
+            return bad
 
         if dry_run:
-            info = local_preview_command(built["payload"])
-            audit("exec.dry_run", {"cmd": built["payload"]["cmd"],
-                                   "level": verdict.level})
+            audit("exec.dry_run", {"expr": expr, "argc": len(args)})
             return ToolResult.ok(
-                ("【预演，未执行】\n"
-                 f"表达式：{built['expr']}\n"
-                 f"负载：{built['json']}\n"
-                 f"分级：{verdict.level}（{ '放行' if verdict.allowed else '拒绝'}）\n"
-                 f"负载大小：{info['json_bytes']} 字节\n"
-                 "确认无误后去掉 dry_run 再调用。"),
-                {"dry_run": True, "payload": built["payload"],
-                 "level": verdict.level})
+                "【预演，未执行】\n"
+                "表达式：%s\n"
+                "参数  ：%s\n"
+                "校验  ：通过（MCP 侧）——游戏侧还会再校验一次\n"
+                "确认无误后去掉 dry_run 再调用。" % (expr, json.dumps(args, ensure_ascii=False)),
+                {"dry_run": True, "expr": expr, "args": args})
 
         cid = new_cid()
-        reply = chan.send({"cid": cid, "cmd": built["payload"]["cmd"],
-                           "args": built["payload"]["args"]}, timeout_s=timeout_s)
-        audit("exec", {"cid": reply.cid, "cmd": built["payload"]["cmd"],
-                       "level": verdict.level, "ok": reply.ok,
-                       "elapsed_ms": reply.elapsed_ms,
-                       "channel": reply.channel,
-                       "error": reply.error[:200]})
+        # 参数数组的形态：[表达式, 实参数组]
+        reply = chan.send({"cid": cid, "cmd": "exec", "args": [expr, args]},
+                          timeout_s=timeout_s)
+        audit("exec", {"cid": reply.cid, "expr": expr, "argc": len(args),
+                       "ok": reply.ok, "elapsed_ms": reply.elapsed_ms,
+                       "channel": reply.channel, "error": reply.error[:200]})
 
         if not reply.ok:
-            return ToolResult.fail(
-                f"执行失败（{built['payload']['cmd']}）：{reply.error}",
-                reply.to_dict())
+            return ToolResult.fail("执行失败：%s" % reply.error, reply.to_dict())
         return ToolResult.ok(
-            f"已执行 {built['payload']['cmd']}（cid={reply.cid}，"
-            f"{reply.elapsed_ms} ms）\n结果："
-            f"{json.dumps(reply.result, ensure_ascii=False)[:1500]}",
+            "已执行（cid=%s，%d ms）\n结果：%s"
+            % (reply.cid, reply.elapsed_ms,
+               json.dumps(reply.result, ensure_ascii=False)[:1500]),
             reply.to_dict())
 
     @reg.tool(
         name="exec",
-        description=("在游戏内执行一条引擎命令（结构化调用：命令名 + 位置参数）。"
-                     "执行前会查库校验参数并过闸门。强烈建议先用 dry_run=true "
-                     "看清将要发送的内容。游戏实体参数用单元素数组，"
-                     "如 [[\"u_17\"]]。"),
+        description=("在游戏内执行一条**表达式**（动态表达式方案）。"
+                     "表达式里用 _p0/_p1… 作参数占位符，标识符必须落在引擎命令"
+                     "白名单内；参数以**数据**传入 args，不得写进表达式文本。"
+                     "例：expr=\"_p0 setDamage _p1\", args=[[\"u_1\"], [0.5]]。"
+                     "实体用单元素数组承载。建议先 dry_run=true 预演。"),
         input_schema={
             "type": "object",
             "properties": {
-                "cmd": {"type": "string", "minLength": 1,
-                        "description": "命令名或官方函数名，如 setPosATL"},
+                "expr": {"type": "string", "minLength": 1,
+                         "description": "表达式，如 _p0 doMove _p1"},
                 "args": {"type": "array",
-                         "description": "位置参数数组"},
-                "dry_run": {"type": "boolean",
-                            "description": "只校验与预演，不真正执行"},
+                         "description": "实参数组，按 _p0.._pN 对应，如 [[\"u_1\"], [100,200,0]]"},
+                "dry_run": {"type": "boolean", "description": "只校验与预演"},
                 "timeout_s": {"type": "number", "minimum": 0.2, "maximum": 60,
-                              "description": "等待回执的秒数，默认 5"},
+                              "description": "等待回执秒数，默认 5"},
             },
-            "required": ["cmd"],
+            "required": ["expr"],
         },
         phase="execute",
     )
     def _exec(args: dict) -> ToolResult:
-        return _do_exec(args["cmd"], args.get("args") or [],
+        return _do_exec(args["expr"], args.get("args") or [],
                         bool(args.get("dry_run")), float(args.get("timeout_s", 5.0)))
 
     @reg.tool(
@@ -142,17 +114,19 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
             "properties": {
                 "calls": {
                     "type": "array",
-                    "description": "调用数组，每项 {cmd, args}",
+                    "description": "调用数组，每项 {expr, args}",
                     "items": {
                         "type": "object",
                         "properties": {
-                            "cmd": {"type": "string", "minLength": 1},
+                            "expr": {"type": "string", "minLength": 1},
                             "args": {"type": "array"},
                         },
-                        "required": ["cmd"],
+                        "required": ["expr"],
                     },
                 },
                 "dry_run": {"type": "boolean"},
+                "timeout_s": {"type": "number", "minimum": 0.2, "maximum": 60,
+                              "description": "每条命令等待回执的秒数，默认 5"},
                 "max_calls": {"type": "integer", "minimum": 1,
                               "maximum": HARD_BATCH_MAX,
                               "description": f"允许的最大条数，默认 {DEFAULT_BATCH_MAX}"},
@@ -173,17 +147,60 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
         dry = bool(args.get("dry_run"))
         results = []
         for i, call in enumerate(calls, 1):
-            cmd = call.get("cmd", "")
-            sub = _do_exec(cmd, call.get("args") or [], dry,
+            expr = call.get("expr", "")
+            sub = _do_exec(expr, call.get("args") or [], dry,
                            float(args.get("timeout_s", 5.0)))
-            results.append({"index": i, "cmd": cmd, "ok": not sub.is_error,
+            results.append({"index": i, "expr": expr, "ok": not sub.is_error,
                             "text": sub.text})
         ok_n = sum(1 for r in results if r["ok"])
         lines = [f"批量执行：{ok_n}/{len(results)} 条成功"
                  + ("（预演模式，未真正执行）" if dry else ""), ""]
         for r in results:
-            lines.append(f"[{r['index']}] {'✓' if r['ok'] else '✗'} {r['cmd']}")
+            lines.append(f"[{r['index']}] {'✓' if r['ok'] else '✗'} {r['expr']}")
             for line in r["text"].splitlines():
                 lines.append("      " + line)
         return ToolResult.ok("\n".join(lines),
                              {"total": len(results), "ok": ok_n, "results": results})
+
+
+def register_channel_tools(reg: Registry, chan: Channel) -> None:
+    """注册与游戏侧直接相关的查看工具。
+
+    为什么必须单独有它：P1 起游戏侧会**主动上行**事件（命令错误、队列丢弃、
+    状态上报）。这些信息不在任何命令的回执里，只能靠拉取事件流才能看到——
+    不提供这个入口，使用者就只能看到"命令超时"，而看不到超时的真实原因。
+    """
+
+    @reg.tool(
+        name="game_events",
+        description=("拉取游戏侧主动上行的事件（命令错误、队列水位、状态上报等），"
+                     "取走后即清空。命令超时或行为异常时先看这里——"
+                     "游戏侧的错误**不在回执里**。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 2000,
+                          "description": "最多返回多少条（默认 200，取最近的）"},
+                "filter": {"type": "string",
+                           "description": "只返回包含该子串的事件行，如 evt: 或 err"},
+            },
+        },
+        phase="execute",
+    )
+    def _events(args: dict) -> ToolResult:
+        try:
+            events = chan.drain_events(limit=args.get("limit", 200))
+        except AttributeError:
+            return ToolResult.ok("当前通道不支持事件拉取（未实现 drain_events）。",
+                                 {"events": []})
+        needle = (args.get("filter") or "").strip()
+        if needle:
+            events = [e for e in events if needle in e]
+        if not events:
+            return ToolResult.ok(
+                "没有新事件。\n（游戏侧未连接、或确实还没有上行事件。）",
+                {"events": [], "count": 0})
+        lines = ["游戏侧事件 %d 条（已取走）：" % len(events), ""]
+        lines.extend("  " + e for e in events)
+        return ToolResult.ok("\n".join(lines),
+                             {"events": events, "count": len(events)})

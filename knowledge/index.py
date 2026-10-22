@@ -20,7 +20,7 @@ import lzma
 import os
 import re
 from functools import lru_cache
-from typing import Any, Iterable
+from typing import Any, Iterable, Optional
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = os.path.join(REPO, "data", "commands.json.xz")
@@ -144,7 +144,7 @@ _DEFAULT_RE = re.compile(r"default\s+([^,)]+)", re.I)
 _UNKNOWN = "unknown"
 
 
-def _lookup_type(word: str) -> str | None:
+def _lookup_type(word: str) -> Optional[str]:
     """一个候选片段 -> 归一化类型；不认识返回 None。
 
     真实数据里类型串形态极杂：`Object`、`OBJECT`、`BOOL`、`SCALAR`、
@@ -227,8 +227,8 @@ class CommandIndex:
 
     def __init__(self, path: str = DATA) -> None:
         self.path = path
-        self._records: dict[str, dict] | None = None
-        self._meta: dict | None = None
+        self._records: Optional[dict[str, dict]] = None
+        self._meta: Optional[dict] = None
 
     # ---------------------------------------------------------------- 加载
 
@@ -287,8 +287,8 @@ class CommandIndex:
         out.sort(key=lambda x: (-x["count"], x["family"]))
         return out
 
-    def search(self, query: str, family: str | None = None,
-               kind: str | None = None, limit: int = 25) -> list[dict]:
+    def search(self, query: str, family: Optional[str] = None,
+               kind: Optional[str] = None, limit: int = 25) -> list[dict]:
         """检索命令。按"名字命中 > 描述命中"排序。"""
         q = (query or "").strip().lower()
         if not q:
@@ -320,7 +320,7 @@ class CommandIndex:
             "summary": (r["d"] or "").split("\n")[0][:160],
         } for _, r in hits[:limit]]
 
-    def get(self, name: str) -> dict | None:
+    def get(self, name: str) -> Optional[dict]:
         """按名取记录。先精确（忽略大小写），再尝试唯一前缀匹配。"""
         low = (name or "").strip().lower()
         if not low:
@@ -348,7 +348,7 @@ class CommandIndex:
         hits.sort(key=lambda k: (not k.startswith(low), len(k), k))
         return hits[:limit]
 
-    def arma3_since(self, rec: dict) -> str | None:
+    def arma3_since(self, rec: dict) -> Optional[str]:
         """该命令在 Arma 3 的引入版本（无则 None）。"""
         for entry in rec.get("compat") or []:
             if entry.get("g") == "arma3":

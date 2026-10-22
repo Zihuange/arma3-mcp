@@ -127,3 +127,184 @@ MCP 面很小：`initialize` / `tools/list` / `tools/call` / 通知收尾。
 那会让上层得出完全错误的结论。宁可拒绝并解释，也不制造"命令凭空丢失"。
 
 （该上限值待 P1 上机实测后按真实队列容量调整。）
+
+
+## D12 通道方向反转：MCP 当 TCP 服务端，游戏连回来（推翻原"命名管道"设计）
+
+**背景**：原计划（见 `docs/deploy.md` 早期版本）是命名管道 + DLL 做服务端。
+落地前先做了连通性实测，结果推翻了它。
+
+**实测结果**（WSL2 NAT 模式，本机）：
+
+| 方向 | 结果 |
+|---|---|
+| WSL → Windows 的 `127.0.0.1` | **连不上**（Connection refused） |
+| Windows → WSL 的 IP | **能连**（源地址是网关 `192.168.160.1`） |
+
+**决定**：MCP 侧（跑在 WSL）做 TCP **服务端**，游戏进程内的扩展 DLL 主动连回来。
+
+**两条被否掉的方案及其原因**：
+1. **命名管道**：除了方向问题（管道同样必须由游戏侧发起），还有一条硬事实——
+   WSL 侧的 Python **根本访问不到 Windows 命名管道**
+   （`multiprocessing.connection` 的管道地址只在 Windows 上有效，而 MCP 服务器不在 Windows 上）。
+2. **MCP 做客户端连游戏**：方向被 NAT 堵死，实测已排除。
+
+**代价与缓解**：
+- 服务端必须监听 `0.0.0.0`（只绑 `127.0.0.1` 则 Windows 连不进来）；
+- 缓解：协议里有 token 握手（默认 `arma3-mcp-local`，可配 `ALC_TCP_TOKEN`），
+  且 WSL2 NAT 本身不把该端口暴露给局域网；
+- 真实 DLL 上机时需再确认一次 Windows 防火墙是否放行（连出方向通常无碍）。
+
+**方法论收获**：涉及跨系统边界的架构决策，先花 5 分钟做连通性实测，
+比写完代码再发现方向不对便宜得多。这次的实测把一个"看起来优雅"的方案
+（命名管道、同机无端口）换成了"确实可行"的方案（TCP）。
+
+
+## D13 把 MCP 移到 Windows 侧运行——彻底消除跨系统连接问题
+
+**问题**（由 D12 引出）：MCP 跑在 WSL、游戏跑在 Windows，于是必须依赖
+"Windows 能连 WSL"这条单向通路，代价是一串绕行：WSL IP 会变、服务端只能绑
+`0.0.0.0`、用不了 Windows 命名管道、多一层 NAT 转发。
+
+**决定**：MCP 服务器改在 **Windows 侧**运行（`H:\Program Files\Anaconda3\python.exe`）。
+游戏与 MCP 于是处在同一个网络栈：`127.0.0.1` 直连，命名管道也可用，
+不需要任何跨系统绕行。
+
+**为此刻意付出的两处改动**：
+
+1. **源码降到 Python 3.9 语法**。Windows 侧只有 Anaconda 的 3.9.7，而仓库原本
+   用了 42 处 `X | None`（PEP 604，3.10+）。用 `tools/downgrade_annotations.py`
+   基于 **ast 定位注解区间**做改写（不是全文正则——`|` 在布尔表达式与字符串里
+   都会出现，全文替换会改坏代码），改写为 `Optional[X]` / `Union[...]`。
+   代价：少了一点语法糖。收益：同一套代码在两个平台各 150 个测试全绿。
+2. **`SO_EXCLUSIVEADDRUSE`**。Windows 上 `SO_REUSEADDR` 的语义与 Unix **相反**：
+   它允许另一个进程绑定同一端口并静默抢走连接。测试抓到了这点（"端口被占用应
+   报错"在 Windows 上失败），故 Windows 用独占绑定、Unix 用 `SO_REUSEADDR`。
+   → 这类差异只有真在目标平台跑测试才会暴露，靠读文档想不到。
+
+**为什么不干脆两边都支持**：现在是两边都支持（代码跨平台、测试两平台全绿），
+只是**部署位置**选了 Windows。若哪天要在 WSL 侧部署，`ALC_CHANNEL=tcp` 配 D12 的
+方向即可，无需改代码。
+
+**验证**：`tools/verify_windows.py` —— 一条命令自检 Windows 侧环境
+（解释器版本、xz 解压 5181 条、中文渲染、MCP 启动与工具注册、TCP 通道本机
+`127.0.0.1` 可连、握手拿到 `hello_ack`）。
+
+
+## D14 撤回 D13：MCP 不能跑在 Windows 侧（WSL 内的 Node 无法执行 .exe）
+
+**背景**：D13 为了消除跨系统连接问题，把 MCP 部署到 Windows 侧（与游戏同网络栈）。
+部署后 DSH 重启，**工具全部消失**。
+
+**根因（实测，非推断）**：本机 DSH 是**跑在 WSL 里的 Node 进程**，而
+**WSL 里的 Node 无法执行 Windows 程序**。用 Node 的 `child_process.spawn`
+逐个变体实测：
+
+| 变体 | 结果 |
+|---|---|
+| `spawn('H:\\Program Files\\Anaconda3\\python.exe')` | **ENOENT**（路径确实存在） |
+| `spawn('/mnt/c/Windows/System32/cmd.exe', ['/c', ...])` | 启动后无任何输出（超时） |
+| `spawn('/mnt/c/Windows/py.exe', ...)` | 同上，无输出 |
+| `spawn('/usr/bin/python3', ...)` | **正常**（exit=0，输出正确） |
+
+关键区分：在**交互 shell** 里 `py.exe` 能跑（WSL interop 经 binfmt_misc 生效），
+但在 WSL Node 进程的 `spawn` 里走不通——**interop 不是 Node 子进程继承的能力**。
+这条差异极易误判：同一个命令在终端里试是通的，在 DSH 里就是起不来。
+
+**决定**：撤回 D13，MCP 回到 **WSL 侧**运行；跨系统连通性按 D12 的方案解决——
+**游戏侧 DLL 主动反连 WSL 的 IP**（实测 Windows → WSL 可达）。
+
+**代价（比 D13 方案多出来的部分）**：
+- 游戏侧需要知道 WSL 的 IP，且该 IP 会随 WSL 重启变化 → MCP 在监听时把
+  当前地址写到一个游戏侧可读的文件，由 `-init=` 注入的脚本读取（P1 落地）；
+- 服务端需绑 `0.0.0.0` 而非 `127.0.0.1`（Windows 侧要能连进来）→ 用 token 握手兜底。
+
+**保留的成果**：D13 期间做的**跨平台兼容工作不撤**——
+- 源码仍是 Python 3.9 可解析（`tools/downgrade_annotations.py`）；
+- `SO_EXCLUSIVEADDRUSE` 的平台分支保留；
+- `tools/verify_windows.py` 保留（Windows 侧的健康自检仍有价值，
+  例如将来用 PyInstaller 打成独立 exe、或以别的方式在 Windows 侧跑时能直接用）；
+- 两个平台各 150 个测试全绿的状态保持。
+
+**方法论收获（比结论更值钱）**：改部署位置这类改动，**先验证目标运行时能否被启动**，
+再动配置。这次的教训是——"某命令在终端里能跑"与"它能被我们的宿主进程启动"
+是两件事，差距就在 interop / 解释器解析这类边界上。
+
+
+## D15 恢复 Windows 侧部署——改用 HTTP 传输（D14 的出路）
+
+**问题的出路**：D14 确认"DSH 用 stdio 启动 Windows 进程"不可行（WSL 的 Node
+无法执行 .exe）。但 MCP 客户端还支持另一种传输：**`streamable-http`**。
+把它用起来，就不需要 DSH 启动任何进程——**用户手动启动服务端，DSH 连过来**。
+
+**先做连通性实测（吸取 D14 的教训：部署前先验证目标运行时/网络）**：
+
+| 方向与绑法 | 结果 |
+|---|---|
+| Windows 服务绑 `127.0.0.1`，WSL 访问 | **不可达** |
+| Windows 服务绑 `0.0.0.0`，WSL 经**网关地址**访问 | **可达**（`curl` 成功） |
+
+**端到端验证**（WSL 侧对 Windows 侧运行的 MCP）：
+`initialize` 200 且协议版本回显正确、`tools/list` 返回 10 个工具、
+`tools/call` 正常返回 —— 全部通过。
+
+**决定**：
+- MCP 以 `--transport http` 运行在 Windows 侧，绑 `0.0.0.0`；
+- DSH 侧用 `transport: streamable-http` + `url: http://<Windows的vEthernet(WSL)地址>:32128/mcp`；
+- 新增 `serve_http.py`（打印 DSH 该填的地址）与 `start_windows.bat`（双击即启动）。
+
+**HTTP 传输的实现取舍**：采用**无状态 JSON 响应**模式（POST 进、JSON 出，不开 SSE）。
+MCP 的 Streamable HTTP 允许服务端直接回 JSON；本服务器的工具无跨请求会话状态，
+无状态实现更简单、也更好排查。另有两个刻意的行为：
+- `GET /mcp` 返回 **405 并说明不推送**，而不是挂住连接——挂住会让客户端误以为
+  支持 SSE 而一直等待；
+- 工具失败返回 **200 + isError**，不是 HTTP 错误码——部分客户端把非 2xx 当传输
+  故障并断开，那会把"工具报错"升级成"服务器不可用"。
+
+**代价与残留风险**：
+- 需要用户**手动启动**（一次双击），不像 stdio 那样自动拉起；
+- DSH 配置里的 IP 在 WSL 重启后**可能变化** → 重跑启动器取新地址；启动器会明确打印；
+- Windows 防火墙可能对新监听的端口弹窗，需允许（首次）。
+
+**两种方式都保留**：WSL stdio 方式（D12）在配置里以注释形式保留，随时可切回。
+
+
+## D16 最终打通：直连失败的真凶是 Windows 防火墙（不是代理、不是 Node）
+
+**现象**：D15 之后 DSH 仍连不上 Windows 侧的 MCP（工具不出现）。
+逐层排查的结果**推翻了几次中间结论**，值得完整记录：
+
+| 探测 | 结果 |
+|---|---|
+| `curl http://192.168.160.1:32128/health` | **200**（看起来"通了"） |
+| `curl --noproxy '*' 同一地址` | **超时** |
+| Python `socket.connect` 同一地址 | **超时** |
+| Node（`net` / `http` / `fetch`）同一地址 | **超时** |
+| Python 经代理 `192.168.160.1:7897` 用 `CONNECT` | **200 Connection established** |
+
+由此曾误判为"WSL 只能经代理到达 Windows"，并据此写了 WSL 内转发器方案。
+**真正的差异是那次 curl 走了代理**——代理在 Windows 本机上，它转回本机
+`32128` 自然通；而直连被 **Windows 防火墙丢弃**（防火墙丢弃的特征是
+**超时而非拒绝**，这一点极具误导性：看起来像网络不通，其实是策略拦截）。
+
+**决定性实验**：用 `netsh advfirewall firewall add rule name=arma3-mcp
+dir=in action=allow protocol=TCP localport=32128` 放行后，
+WSL 直连**立刻成功**，且 **Node 的 fetch（undici，即 DSH 的处境）也成功**。
+
+**最终方案**（比 D15 的转发器干净得多）：
+- Windows 侧跑 MCP（`start_windows.bat` → `serve_http.py`, HTTP 传输）；
+- 为该端口加一条 Windows 防火墙入站放行规则；
+- DSH 直接 `transport: streamable-http` + `url: http://<vEthernet(WSL)地址>:32128/mcp`；
+- **转发器（`wsl_forward.py`）保留但不再需要** —— 它仍有价值：换端口且不方便
+  改防火墙时，可用它经代理转发；代码与用法保留在仓库中。
+
+**方法论收获（这一轮最大的教训）**：
+1. **不要用 `curl` 判断"网络是否直连可达"**——它会读 `HTTP_PROXY`，而
+   `Node` 的 `undici` 默认不读。两者行为不同，用 curl 的"成功"推断 Node 的
+   可达性，会把结论带偏一整轮。判断直连必须用 `--noproxy '*'` 或直接用
+   与目标运行时相同的栈（本例用 Node）验证。
+2. **超时 ≠ 网络不通**。防火墙丢弃（DROP）表现为超时，与路由不可达难以区分；
+   而 `refused` 才是"没有监听"。遇到"curl 通但 Node 不通"这类矛盾，
+   先怀疑**路径不同**（代理、IPv4/IPv6、绑定地址），再怀疑策略层。
+3. 涉及系统策略（防火墙/权限）的改动，**先做一次实证再写代码**——
+   这次的转发器方案就是没实证到最后一步的产物（虽然它作为备选仍有价值）。

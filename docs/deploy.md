@@ -86,6 +86,83 @@ cd /tmp && env -i ALC_ENGINE_WRITE=1 /usr/bin/python3 -m servers.engine  # 需 c
 | `ALC_AUDIT_LOG` | 空 | 审计 JSONL 落点 |
 | `ARMA3_MCP_CMD_SOURCE` | 空 | 命令定义来源路径（覆盖自动探测） |
 
+## 方式二：Windows 侧手动启动 + HTTP 传输（推荐用于本机单机）
+
+**为什么需要这种方式**：本机 DSH 是跑在 WSL 里的 Node 进程，而
+**WSL 的 Node 无法执行 Windows 程序**（`spawn` 返回 ENOENT，实测见
+`docs/decisions.md` D14）。所以 DSH 无法用 stdio 自动拉起 Windows 侧的 MCP 进程。
+改用 HTTP：**用户手动启动**服务端，DSH 作为 HTTP 客户端连过来。
+
+**收益**：MCP 与游戏同处 Windows 网络栈 —— 游戏侧可 `127.0.0.1` 直连，
+不需要"反连进 WSL"那套绕行（WSL IP 变动、只能绑 0.0.0.0 等问题随之消失）。
+
+### 启动（Windows 侧）
+
+```bat
+<repo>\start_windows.bat          :: 默认端口 32128
+<repo>\start_windows.bat 32130    :: 指定端口
+```
+
+启动器会打印两行关键信息：
+
+```
+  本机地址   : http://127.0.0.1:32128/mcp
+  ★ DSH 填这个: http://192.168.160.1:32128/mcp
+```
+
+**那个带星号的就是 DSH 要填的 url** —— 它是 Windows 上 `vEthernet (WSL)`
+网卡的 IPv4，WSL 经它访问 Windows。
+
+### 两个硬约束（都是实测结论）
+
+| 约束 | 后果 |
+|---|---|
+| 服务端必须绑 `0.0.0.0` | 只绑 `127.0.0.1` 时 **WSL 连不进来**（NAT 隔离） |
+| DSH 必须填**网关地址**，不能填 `127.0.0.1` | WSL 的 `127.0.0.1` 是它自己的回环 |
+
+⚠ `vEthernet (WSL)` 的 IP 在 WSL 重启后**可能变化**。若 DSH 报连不上，
+重跑启动器取新的带星号地址并更新 DSH 配置里的 `url`。
+
+### DSH 侧配置
+
+```yaml
+- id: mcp-arma3-engine-http
+  name: 'file:///<DSH_HOME>/profiles/node_modules/@deepseek-ai/dsh-mcp-client/lib/index.js'
+  config:
+    serverName: arma3_engine
+    transport: streamable-http
+    url: http://192.168.160.1:32128/mcp
+    toolCallTimeoutMs: 30000
+    failOnStartupError: false
+```
+
+### 验证（不依赖 DSH）
+
+```bash
+# 在 WSL 里；GW 取 WSL 的默认网关（即 Windows 的 vEthernet (WSL) 地址）
+GW=$(ip route | awk '/default/{print $3}')
+curl -s http://$GW:32128/health                      # {"ok":true,"server":"arma3-mcp"}
+curl -s -X POST http://$GW:32128/mcp \
+     -H 'Content-Type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+```
+
+### HTTP 传输的实现取舍
+
+采用 **无状态 JSON 响应**模式：一个 POST 进来、一个 JSON 出去，不开 SSE 流。
+理由：本服务器的工具没有跨请求会话状态（执行通道是进程级的），无状态实现更简单、
+出错时看到的就是一个普通 HTTP 请求，好排查。
+
+- `POST /mcp` —— JSON-RPC 请求回 JSON；通知回 `202` 无正文
+- `GET /mcp` —— 返回 `405` 并说明本服务器不推送（**不挂住连接**：挂住会让客户端
+  以为服务端支持 SSE，从而一直等）
+- `DELETE /mcp` —— `204`
+- `GET /health` —— 存活探测（运维用，非 MCP 协议）
+- 工具失败返回 `200` + `isError`，**不是** HTTP 错误码 —— 部分客户端会把非 2xx
+  当传输故障并断开，那会把"工具报错"升级成"服务器不可用"
+
+---
+
 ## P1（待实现）：游戏内执行通道
 
 > ⚠ 以下为设计，**尚未实现**。落地时须按本机既有工程的分支与合并流程走。

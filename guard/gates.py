@@ -16,9 +16,11 @@
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -90,7 +92,7 @@ class Verdict:
     allowed: bool
     level: str                       # read / write / exotic / forbidden
     reason: str = ""
-    needs_flag: str | None = None
+    needs_flag: Optional[str] = None
 
     def to_dict(self) -> dict:
         out: dict = {"allowed": self.allowed, "level": self.level}
@@ -137,7 +139,7 @@ class Gates:
     overrides: set[str] = field(default_factory=set)
 
     @classmethod
-    def from_env(cls, env: dict | None = None) -> "Gates":
+    def from_env(cls, env: Optional[dict] = None) -> "Gates":
         e = env if env is not None else os.environ
 
         def flag(key: str, default: bool) -> bool:
@@ -210,9 +212,15 @@ CHEAT_COMMANDS = {
 }
 
 
-def audit(tool: str, detail: dict, path: str | None = None) -> str:
-    """生成一条审计记录（JSONL），可选追加落盘。返回该行文本。"""
-    rec = {"ts": round(time.time(), 3), "tool": tool}
+def audit(tool: str, detail: dict, path: Optional[str] = None) -> str:
+    """生成一条审计记录（JSONL），可选追加落盘。返回该行文本。
+
+    带上实例标识（pid + 解释器）：同一份仓库可能同时被 WSL 侧与 Windows 侧的
+    实例使用，而审计落到同一个文件——不区分来源的话，审计记录回答不了
+    "这是谁做的"（多实例共存是常态，不是例外）。
+    """
+    rec = {"ts": round(time.time(), 3), "tool": tool,
+           "pid": os.getpid(), "exe": sys.executable}
     rec.update(detail)
     line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
     target = path or os.environ.get("ALC_AUDIT_LOG")

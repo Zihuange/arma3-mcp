@@ -19,7 +19,7 @@ import os
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -103,7 +103,7 @@ def local_preview_command(payload: dict) -> dict:
     }
 
 
-def channel_from_env(env: dict | None = None) -> Channel:
+def channel_from_env(env: Optional[dict] = None) -> Channel:
     """按环境变量选通道。默认 NullChannel（P0 阶段）。"""
     e = env if env is not None else os.environ
     explicit = (e.get("ALC_CHANNEL") or "").strip().lower()

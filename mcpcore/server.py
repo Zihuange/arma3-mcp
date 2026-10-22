@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, Optional
 
 from .jsonrpc import (
     INTERNAL_ERROR,
@@ -40,18 +40,22 @@ SERVER_VERSION = "0.1.0"
 class Server:
     def __init__(self, registry: Registry, name: str = SERVER_NAME,
                  version: str = SERVER_VERSION,
-                 instructions: str | None = None) -> None:
+                 instructions: Optional[str] = None) -> None:
         self.registry = registry
         self.name = name
         self.version = version
         self.instructions = instructions
         self._initialized = False
+        # 协议版本：与客户端协商。HTTP 传输可以在 initialize 之前先设置它
+        # （见 http_transport 的先读后分发），stdio 则用 initialize 的入参。
+        self.protocol_version = PROTOCOL_VERSION
         self.stats = {"received": 0, "calls": 0, "errors": 0}
 
     # ---------------------------------------------------------------- MCP 方法
 
     def _initialize(self, params: dict) -> dict:
-        client_version = params.get("protocolVersion") or PROTOCOL_VERSION
+        client_version = (params.get("protocolVersion")
+                          or self.protocol_version or PROTOCOL_VERSION)
         self._initialized = True
         result: dict[str, Any] = {
             # 回显客户端版本：双方协商，回显比硬塞自己的版本更安全
@@ -78,7 +82,7 @@ class Server:
 
     # ---------------------------------------------------------------- 分发
 
-    def handle(self, msg: dict) -> dict | None:
+    def handle(self, msg: dict) -> Optional[dict]:
         """处理一条消息。返回响应字典；通知返回 None。"""
         if msg.get("jsonrpc") not in (None, "2.0"):
             return error_response(msg.get("id"),
@@ -134,9 +138,9 @@ class Server:
 
     # ---------------------------------------------------------------- 主循环
 
-    def serve(self, stdin: BinaryIO | None = None,
-              stdout: BinaryIO | None = None,
-              stderr: BinaryIO | None = None) -> int:
+    def serve(self, stdin: Optional[BinaryIO] = None,
+              stdout: Optional[BinaryIO] = None,
+              stderr: Optional[BinaryIO] = None) -> int:
         inp = stdin if stdin is not None else sys.stdin.buffer
         out = stdout if stdout is not None else sys.stdout.buffer
 
@@ -156,7 +160,7 @@ class Server:
 
 def main(registry: Registry, name: str = SERVER_NAME,
          version: str = SERVER_VERSION,
-         instructions: str | None = None) -> int:
+         instructions: Optional[str] = None) -> int:
     """给 servers/*.py 用的入口包装：任何崩溃都转成可读的 stderr 信息 + 非零码。"""
     server = Server(registry, name=name, version=version,
                     instructions=instructions)

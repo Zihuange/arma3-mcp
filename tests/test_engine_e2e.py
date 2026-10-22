@@ -7,6 +7,7 @@
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 import os
@@ -20,7 +21,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 class ServerProcess:
     """把服务器当子进程驱动：发一条消息，读一条响应。"""
 
-    def __init__(self, env: dict | None = None) -> None:
+    def __init__(self, env: Optional[dict] = None) -> None:
         merged = dict(os.environ)
         merged.setdefault("PYTHONIOENCODING", "utf-8")
         if env:
@@ -31,8 +32,8 @@ class ServerProcess:
             stderr=subprocess.PIPE, env=merged)
         self._id = 0
 
-    def send(self, method: str, params: dict | None = None,
-             notify: bool = False) -> dict | None:
+    def send(self, method: str, params: Optional[dict] = None,
+             notify: bool = False) -> Optional[dict]:
         msg: dict = {"jsonrpc": "2.0", "method": method}
         if not notify:
             self._id += 1
@@ -47,7 +48,7 @@ class ServerProcess:
             return None
         return self._read()
 
-    def call(self, tool: str, args: dict | None = None) -> dict:
+    def call(self, tool: str, args: Optional[dict] = None) -> dict:
         resp = self.send("tools/call", {"name": tool, "arguments": args or {}})
         assert resp is not None
         if "error" in resp:
@@ -158,55 +159,61 @@ class TestEngineServerE2E(unittest.TestCase):
 
     def test_exec_dry_run_shows_payload_without_sending(self):
         result = self.srv.call("exec", {
-            "cmd": "setPosATL", "args": [["u_17"], [1, 2, 3]], "dry_run": True})
+            "expr": "_p0 setPosATL _p1", "args": [["u_17"], [1, 2, 3]],
+            "dry_run": True})
         text = text_of(result)
         self.assertFalse(result["isError"])
-        self.assertIn("预演，未执行", text)
-        self.assertIn("<u_17>", text)
-        payload = result["structuredContent"]["payload"]
-        self.assertEqual(payload["cmd"], "setPosATL")
-        self.assertEqual(payload["args"][0], {"__ent__": "u_17"})
+        self.assertIn("预演", text)
+        self.assertIn("_p0 setPosATL _p1", text)
+        data = result["structuredContent"]
+        self.assertEqual(data["expr"], "_p0 setPosATL _p1")
+        self.assertEqual(data["args"][0], ["u_17"])
 
     def test_exec_without_channel_fails_loudly(self):
         """P0 阶段没有执行通道：必须明确说"没发送、没执行"，绝不假装成功。"""
         result = self.srv.call("exec", {
-            "cmd": "setPosATL", "args": [["u_17"], [1, 2, 3]]})
+            "expr": "_p0 setPosATL _p1", "args": [["u_17"], [1, 2, 3]]})
         self.assertTrue(result["isError"])
         text = text_of(result)
         self.assertIn("未接通", text)
         self.assertIn("没有", text)
 
     def test_exec_blocks_forbidden_command(self):
-        result = self.srv.call("exec", {"cmd": "execVM", "args": ["x.sqf"]})
+        # 表达式里出现禁区命令：由表达式校验器拦下（白名单不含禁区名）
+        result = self.srv.call("exec", {"expr": "execVM _p0", "args": [["x.sqf"]]})
         self.assertTrue(result["isError"])
-        self.assertIn("硬禁", text_of(result))
+        self.assertIn("校验未通过", text_of(result))
 
     def test_exec_blocks_exotic_by_default(self):
+        # createVehicle 属 EXOTIC：白名单按分级排除它，故表达式校验先拦下
         result = self.srv.call("exec", {
-            "cmd": "createVehicle", "args": ["B_MRAP_01_F", [0, 0, 0]]})
+            "expr": "_p0 createVehicle _p1", "args": [["B_MRAP_01_F"], [[0, 0, 0]]]})
         self.assertTrue(result["isError"])
-        self.assertIn("EXOTIC", text_of(result))
+        self.assertIn("校验未通过", text_of(result))
 
     def test_exec_rejects_bad_args_before_channel(self):
-        result = self.srv.call("exec", {"cmd": "setPosATL", "args": []})
+        # 表达式里的占位符数量与实参不符
+        result = self.srv.call("exec", {"expr": "_p0 setPosATL _p1", "args": []})
         self.assertTrue(result["isError"])
-        self.assertIn("参数校验不通过", text_of(result))
+        self.assertIn("校验未通过", text_of(result))
 
     def test_exec_unknown_command_suggests(self):
-        result = self.srv.call("exec", {"cmd": "setposat", "args": []})
+        # 白名单外的标识符（拼错的命令名）
+        result = self.srv.call("exec", {"expr": "_p0 setposat _p1",
+                                        "args": [["a"], [1]]})
         text = text_of(result)
         self.assertTrue(result["isError"])
-        self.assertIn("setposatl", text.lower())
+        self.assertIn("白名单", text)
 
     def test_exec_batch_respects_limit(self):
-        calls = [{"cmd": "getPos", "args": [["u_1"]]} for _ in range(12)]
+        calls = [{"expr": "getPos _p0", "args": [["u_1"]]} for _ in range(12)]
         result = self.srv.call("exec_batch", {"calls": calls})
         self.assertTrue(result["isError"])
         self.assertIn("最多", text_of(result))
 
     def test_exec_batch_dry_run_summary(self):
-        calls = [{"cmd": "getPos", "args": [["u_1"]]},
-                 {"cmd": "markerPos", "args": ["m_1"]}]
+        calls = [{"expr": "getPos _p0", "args": [["u_1"]]},
+                 {"expr": "markerPos _p0", "args": ["m_1"]}]
         result = self.srv.call("exec_batch", {"calls": calls, "dry_run": True})
         text = text_of(result)
         self.assertIn("2/2", text)

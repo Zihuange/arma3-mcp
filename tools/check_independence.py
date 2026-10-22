@@ -32,6 +32,13 @@ OTHER_REPOS = [
 
 # 允许出现这些名字的文件：文档（说明"参考了什么"）与本脚本（定义禁令）。
 DOC_ALLOWED = {"README.md", "check_independence.py"}
+
+# 运行期代码（MCP 服务器与它的支撑模块）——绝不允许依赖外部路径或仓库。
+# tools/ 下是**验证期**工具：它们可选地调用外部静态检查器（SQFLint）来验证
+# 生成的 SQF；检查器缺失时如实报错，而不是静默降级。这个区分是有意的：
+#   · 运行期依赖外部仓库   → 本仓库无法独立工作   （不可接受）
+#   · 验证期可选依赖检查器 → 少一项验证能力       （可接受，且已在文档标注）
+RUNTIME_DIRS = ("mcpcore", "knowledge", "guard", "adapters", "servers")
 DOC_SUFFIXES = (".md",)
 
 # 仓库外的绝对路径：除已声明的工作区外不应硬编码
@@ -81,6 +88,9 @@ def check_code_references() -> list[str]:
         rel = os.path.relpath(path, REPO)
         if os.path.basename(path) in DOC_ALLOWED:
             continue
+        if rel.split(os.sep)[0] not in RUNTIME_DIRS:
+            # 验证期工具允许引用外部检查器（见 RUNTIME_DIRS 注释）
+            continue
         with open(path, encoding="utf-8") as fh:
             text = fh.read()
         lines = text.splitlines()
@@ -104,11 +114,18 @@ def check_code_references() -> list[str]:
 
 
 def check_hardcoded_paths() -> list[str]:
-    """不允许把仓库外的绝对路径写进代码（数据来源除外，且要显式声明）。"""
+    """不允许把仓库外的绝对路径写进**运行期**代码。
+
+    验证期工具（tools/）允许写候选检查器路径——那份路径以"候选列表 + 存在性
+    检查"的形式使用，缺失即明确报错，不影响服务器运行。
+    """
     problems = []
     pattern = re.compile(r"""["'](/mnt/[a-z]/[^"']{4,})["']""")
     for path in python_files():
         rel = os.path.relpath(path, REPO)
+        top = rel.split(os.sep)[0]
+        if top not in RUNTIME_DIRS:
+            continue
         with open(path, encoding="utf-8") as fh:
             for lineno, line in enumerate(fh, 1):
                 if line.strip().startswith("#"):

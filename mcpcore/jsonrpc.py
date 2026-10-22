@@ -14,7 +14,7 @@ from __future__ import annotations
 import io
 import json
 import sys
-from typing import Any
+from typing import Any, Optional
 
 # JSON-RPC 2.0 标准错误码
 PARSE_ERROR = -32700
@@ -40,7 +40,7 @@ class JsonRpcError(Exception):
         return out
 
 
-def read_message(stream: io.BufferedReader) -> dict | None:
+def read_message(stream: io.BufferedReader) -> Optional[dict]:
     """读一条消息。EOF 返回 None。
 
     Content-Length 头与换行分隔两种帧自动识别：
@@ -84,7 +84,7 @@ def _loads(raw: bytes) -> dict:
     return obj
 
 
-def write_message(payload: dict, stream: io.BufferedWriter | None = None) -> None:
+def write_message(payload: dict, stream: Optional[io.BufferedWriter] = None) -> None:
     """写一条消息（换行分隔）。"""
     out = stream if stream is not None else sys.stdout.buffer
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))

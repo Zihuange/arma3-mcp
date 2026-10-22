@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Any, Optional
 
 
 class SerializeError(ValueError):
@@ -50,7 +50,7 @@ def _clean_entity_name(raw: Any) -> str:
     return name
 
 
-def _encode_value(value: Any, expected_type: str | None) -> Any:
+def _encode_value(value: Any, expected_type: Optional[str]) -> Any:
     """把 JSON 值转成"可直接交给 SQF fromJSON"的形态。
 
     实体用 {"__ent__": "名字"} 承载——对象形式的标记不会被业务数据误用，
@@ -86,8 +86,8 @@ def _encode_value(value: Any, expected_type: str | None) -> Any:
         f"只接受 null/bool/number/string/array/object")
 
 
-def build_command(name: str, args: list, variants: list[dict] | None = None,
-                  matched_index: int | None = None) -> dict:
+def build_command(name: str, args: list, variants: Optional[list[dict]] = None,
+                  matched_index: Optional[int] = None) -> dict:
     """构造交给游戏内执行器的调用负载。
 
     返回 {"expr": SQF 表达式文本, "payload": 结构化负载, "json": JSON 文本}

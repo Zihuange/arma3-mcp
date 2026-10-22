@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Optional
 
 from guard import classify
 from mcpcore.registry import Registry, ToolResult
@@ -67,7 +67,7 @@ def render_info(rec: dict, idx: CommandIndex, name: str) -> str:
 
 
 def register(reg: Registry, idx: CommandIndex, gu,
-             matrix: CapabilityMatrix | None = None) -> None:  # noqa: ANN001
+             matrix: Optional[CapabilityMatrix] = None) -> None:  # noqa: ANN001
     """把知识层工具注册进注册表。gu 为闸门对象，matrix 为能力矩阵。"""
 
     @reg.tool(

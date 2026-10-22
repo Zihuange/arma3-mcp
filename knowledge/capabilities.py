@@ -10,6 +10,7 @@ data/capabilities.json 回答的是单条命令签名回答不了的问题：
 """
 
 from __future__ import annotations
+from typing import Optional
 
 import json
 import os
@@ -33,7 +34,7 @@ _LAYER_LABEL = {
 class CapabilityMatrix:
     def __init__(self, path: str = DATA) -> None:
         self.path = path
-        self._data: dict | None = None
+        self._data: Optional[dict] = None
 
     def _ensure(self) -> None:
         if self._data is not None:

@@ -14,3 +14,10 @@ audit.jsonl
 # 本地临时
 /tmp/
 *.tmp
+
+# 构建中间产物
+build/
+
+# 构建产物（由 tools/pack_mod.sh 生成，不入库）
+game/mod/addons/*.pbo
+game/mod/*.dll
