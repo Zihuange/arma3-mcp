@@ -74,10 +74,10 @@ python start.py --http --http-port 32130
 
 ### MCP 服务器 ↔ 游戏 DLL
 
-服务器监听 `server.tcp_port`（默认 **32131**），由游戏内的扩展 DLL **主动连入**
+服务器监听 `server.tcp_port`（默认 **32132**），由游戏内的扩展 DLL **主动连入**
 （引擎不提供"从外部推送"的机制，只能由游戏侧轮询取命令）。
 
-`32131` 必须与 `arma3_mcp_extension.cpp` 里的默认端口一致——不一致时游戏侧连不上，
+`32132` 必须与 `arma3_mcp_extension.cpp` 里的默认端口一致——不一致时游戏侧连不上，
 而且**没有明显提示**。`gates_status` 会显示通道是否接通、执行器是否在取命令。
 
 ## 挂载模组
@@ -152,7 +152,7 @@ DSCreateKey <你的名字>
 | 键 | 默认 | 说明 |
 |---|---|---|
 | `server.transport` | `stdio` | `stdio` / `http` |
-| `server.tcp_port` | `32131` | **必须与 DLL 默认端口一致** |
+| `server.tcp_port` | `32132` | **必须与 DLL 默认端口一致** |
 | `server.channel` | `tcp` | `tcp` / `null`（不监听） |
 | `gates.*` | 见模板 | 命令分级闸门，默认最保守但仍可用 |
 | `gates.profile` | 空 | `debug` / `unrestricted`（后者无门控，见 [`docs/safety.md`](docs/safety.md)） |

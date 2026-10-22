@@ -5,12 +5,11 @@
 > 需要安装步骤请看 [`README.md`](../README.md) 的「安装」一节。
 
 
-> ⚠ **2026-10-18 端口变更**：游戏连接通道的默认端口已由 `32131` 改为 **`32132`**
-> （原 32131 被 `mcp-rimworld-bridge` 经 `wslrelay.exe` 占用，会导致本通道静默退回 `null`）。
-> 已同步修改并重新编译：`game/extension/src/arma3_mcp_extension.cpp` 默认值、`start_windows.bat`、
-> `serve_http.py --game-port`、`tools/dll_smoke.py`（DLL 冒烟测试 6/6 通过）。
-> **下文凡以 `32131` 表述「当前默认端口」之处，请读作 `32132`**；
-> 历史实测与决策记录（本文件第 57-58 行、`decisions.md`）保留原样，未作篡改。
+> ⚠ **2026-10-18 端口变更**：游戏连接通道的默认端口由 `32131` 改为 **`32132`**
+> （原 32131 被 `mcp-rimworld-bridge` 经 `wslrelay.exe` 占用，会让本通道静默退回 `null`）。
+> 当时同步改了 `arma3_mcp_extension.cpp` 的默认值并重新编译；本次开源整理又把
+> `start.py`、`a3mcp.example.json` 与仓库文档一起统一到 `32132`。
+> 本文件以下内容与文档其余部分均为 `32132`；`decisions.md` 是历史记录，保留当时的 `32131`。
 
 当前状态：**模组与 DLL 均已就绪，并通过离线验证**（见下）。以下按顺序做，
 每步都有判据——通过了再进下一步。
@@ -36,7 +35,7 @@ cd /d <repo>
 | 需要游戏世界的命令**不**回执，只能被 `poll` 取走 | 证明两条路径确实分开，而不是"DLL 什么都自己答" |
 | 任何 poll 之前 `poll_ms_ago == -1`，poll 之后被刷新 | 心跳能区分"没跑"与"在跑" |
 
-**端口必须传一个未被占用的**（示例用 32199，别用默认的 32131）。DLL 一加载就从
+**端口必须传一个未被占用的**（示例用 32199，别用默认的 32132）。DLL 一加载就从
 `DllMain` 开始拨默认端口，而 MCP 只保留一个活跃连接——照默认值跑会把正在运行的
 游戏踢下线。脚本会自动复制一份并改写默认端口，所以真实服务不受影响（D18）。
 
@@ -47,7 +46,7 @@ MSVC 14.34）＋ CMake 3.25。
 
 ## 0. 前置：MCP 侧开好游戏连接端口
 
-游戏侧 DLL 会主动连 **`127.0.0.1:32131`**（MCP 与游戏同机，走本机回环）。
+游戏侧 DLL 会主动连 **`127.0.0.1:32132`**（MCP 与游戏同机，走本机回环）。
 
 在**Windows** 上启动 MCP 服务（同时开 HTTP 入口与游戏连接端口）：
 
@@ -61,19 +60,19 @@ MSVC 14.34）＋ CMake 3.25。
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `A3MCP_CHANNEL` | `tcp` | 不开就不会监听游戏连接端口（早先的脚本漏了这句，实测踩到） |
-| `A3MCP_TCP_PORT` | `32131` | **必须与 DLL 的默认端口一致**（`arma3_mcp_extension.cpp` 里 `std::string port = "32131"`）。不一致时游戏侧连不上，且没有明显提示 |
+| `A3MCP_TCP_PORT` | `32132` | **必须与 DLL 的默认端口一致**（`arma3_mcp_extension.cpp` 里 `std::string port = "32132"`）。不一致时游戏侧连不上，且没有明显提示 |
 
-启动横幅会打印 `channel : tcp on port 32131` —— **看到 `null` 就说明通道没开**。
+启动横幅会打印 `channel : tcp on port 32132` —— **看到 `null` 就说明通道没开**。
 
-⚠ **`32131` 被占用时，通道会静默退回 `null`**，`gates_status` 只显示"未接通"。
-本机实测遇到过一种**残留占用**：上一轮的 MCP 绑过 32131 → WSL2 为它建立
-localhost 转发（`wslrelay.exe`）→ MCP 被杀后**转发进程残留**，继续占着 32131，
+⚠ **`32132` 被占用时，通道会静默退回 `null`**，`gates_status` 只显示"未接通"。
+本机实测遇到过一种**残留占用**：上一轮的 MCP 绑过 32132 → WSL2 为它建立
+localhost 转发（`wslrelay.exe`）→ MCP 被杀后**转发进程残留**，继续占着 32132，
 于是新 MCP 绑不上。诊断与清理：
 
 ```bash
-# 谁占着 32131
+# 谁占着 32132
 /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command \
-  "Get-NetTCPConnection -LocalPort 32131 -State Listen | Select-Object LocalAddress,OwningProcess"
+  "Get-NetTCPConnection -LocalPort 32132 -State Listen | Select-Object LocalAddress,OwningProcess"
 # 占用者是 wslrelay.exe（WSL2 机制进程）→ 清掉它即可释放
 /mnt/c/Windows/System32/cmd.exe /c "taskkill /F /PID <那个 PID>"
 ```
@@ -149,10 +148,10 @@ game/mod/
 需要把 MCP 地址告诉 DLL 时，在游戏启动后、进任务前执行一次：
 
 ```sqf
-"arma3_mcp" callExtension ["configure", ["127.0.0.1", "32131"]]
+"arma3_mcp" callExtension ["configure", ["127.0.0.1", "32132"]]
 ```
 
-（默认值就是 `127.0.0.1:32131`，端口没改过就不必执行。）
+（默认值就是 `127.0.0.1:32132`，端口没改过就不必执行。）
 
 ### 执行器什么时候启动（最容易误解的一点）
 
@@ -249,7 +248,7 @@ PS=/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe
 # 有几个 MCP 实例（应恒为 1）
 $PS -NoProfile -Command '@(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "*serve_http*" }).Count'
 # 谁绑着端口
-$PS -NoProfile -Command 'Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 32128,32131 } | Select-Object LocalAddress,LocalPort,OwningProcess'
+$PS -NoProfile -Command 'Get-NetTCPConnection -State Listen | Where-Object { $_.LocalPort -in 32128,32132 } | Select-Object LocalAddress,LocalPort,OwningProcess'
 ```
 
 ⚠ 清理时**不能只按"32128 的 owner"找**：多实例共存时，端口查询只返回其中一个，

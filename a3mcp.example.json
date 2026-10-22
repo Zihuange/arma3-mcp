@@ -14,8 +14,8 @@
     "channel": "tcp",
     "tcp_host": "127.0.0.1",
 
-    "_help_tcp_port": "必须与 DLL 的默认端口一致（arma3_mcp_extension.cpp 里 std::string port = \"32131\"）。不一致时游戏侧连不上，且没有明显提示。",
-    "tcp_port": 32131,
+    "_help_tcp_port": "必须与 DLL 的默认端口一致（arma3_mcp_extension.cpp 里 std::string port = \"32132\"）。不一致时游戏侧连不上，且没有明显提示。",
+    "tcp_port": 32132,
 
     "audit_log": "audit.jsonl",
     "shot_dir": "build/shots"

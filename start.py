@@ -33,7 +33,7 @@ DSH 跑在 WSL 里，而 WSL 的 Node 无法执行 Windows 程序（spawn 返回
 
 `server.channel=tcp` 时，本进程监听 `server.tcp_port`，由**游戏内的扩展 DLL
 主动连入**。该端口必须与 DLL 的默认端口一致（`arma3_mcp_extension.cpp` 里
-`std::string port = "32131"`）——不一致时游戏侧连不上，而且**没有明显提示**。
+`std::string port = "32132"`）——不一致时游戏侧连不上，而且**没有明显提示**。
 """
 
 from __future__ import annotations
@@ -74,7 +74,7 @@ DEFAULTS = {
         "http_port": 32128,
         "channel": "tcp",         # tcp | null
         "tcp_host": "127.0.0.1",
-        "tcp_port": 32131,        # 必须与 DLL 默认端口一致
+        "tcp_port": 32132,        # 必须与 DLL 默认端口一致
         "audit_log": "audit.jsonl",
         "shot_dir": "build/shots",
     },

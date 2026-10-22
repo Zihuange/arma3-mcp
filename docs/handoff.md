@@ -93,7 +93,7 @@ python tools/modkit.py deploy    # 部署（PBO 与 .bisign 一起，含签名�
 | 链路 | 支持 | 默认 |
 |---|---|---|
 | 客户端 ↔ MCP | `stdio` / `http` | **stdio**（同机时客户端直接拉起，零配置） |
-| MCP ↔ 游戏 DLL | `tcp` / `null` | `tcp`（DLL 主动连 32131） |
+| MCP ↔ 游戏 DLL | `tcp` / `null` | `tcp`（DLL 主动连 32132） |
 
 `pipe` 只存在于历史注释，**没有实现**——旧文档提到它的一律以本表为准。
 
