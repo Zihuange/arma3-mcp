@@ -73,6 +73,7 @@ class CfgFunctions {
             class cfgClass {};
             class configQuery {};
             class configOfEntity {};
+            class uiQuery {};
         };
     };
 };

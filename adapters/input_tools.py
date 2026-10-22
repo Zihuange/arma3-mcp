@@ -287,8 +287,10 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
 
     @reg.tool(
         name="input_drag",
-        description=("从屏幕坐标 (x1,y1) 拖拽到 (x2,y2)（按住左键、分步移动、抬起）。"
-                     "地图拖拽、装具拖放这类操作需要它 —— 单纯移动指针不产生拖拽。"),
+        description=("从屏幕坐标 (x1,y1) 拖拽到 (x2,y2)（按住鼠标键、分步移动、抬起）。"
+                     "地图拖拽、装具拖放这类操作需要它 —— 单纯移动指针不产生拖拽。"
+                     "button 可指定用哪个键：**右键拖拽是地图平移的常用手段**"
+                     "（此前只发左键，实测因此做不出平移）。"),
         input_schema={
             "type": "object",
             "properties": {
@@ -296,6 +298,9 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                 "x2": {"type": "integer"}, "y2": {"type": "integer"},
                 "steps": {"type": "integer", "minimum": 1, "maximum": 100,
                           "description": "中间步数，默认 20（步数太少会被当作没拖拽）"},
+                "button": {"type": "integer", "minimum": 0, "maximum": 2,
+                           "description": "鼠标键 0=左 1=右 2=中（默认 0）。"
+                                          "右键拖拽可用于平移地图、拖放等"},
                 "auto_focus": {"type": "boolean",
                                "description": "注入前自动把游戏窗口切到前台（默认 false）"},
             },
@@ -314,7 +319,8 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         reply = chan.send({
             "cmd": "input_drag",
             "args": [args["x1"], args["y1"], args["x2"], args["y2"],
-                     args.get("steps", 20)]}, timeout_s=15.0)
+                     args.get("steps", 20), args.get("button", 0)]},
+            timeout_s=15.0)
         audit("input_drag", {"from": [args["x1"], args["y1"]],
                              "to": [args["x2"], args["y2"]], "ok": reply.ok})
         if not reply.ok:

@@ -209,6 +209,46 @@ def to_screen(rel: list[float], geom: dict) -> tuple[int, int]:
 
 
 def register(reg: Registry, chan) -> None:  # noqa: ANN001
+    def _list_classes() -> ToolResult:
+        """列出界面上所有控件的类名 —— 走模组函数一次遍历做完。
+
+        为什么不在 MCP 侧遍历：
+          · 动态表达式里 lambda 参数 `_x` **不在白名单**，`apply { ctrlClassName _x }`
+            会被校验器拒掉（那是"命令名注入"的防线，不该为便利放宽）；
+          · 逐个 exec 取一个类名 —— 一次往返约 100ms，而界面有 160+ 个控件，且每读
+            一个都要重新求值 allControls（扫描成本正比于控件总数）。
+
+        于是"这个界面上有哪些控件类型"在 MCP 侧**无法高效回答**，而它恰恰是探索
+        未知界面时最先要问的问题：不知道目标叫什么，就没法用 match_class。
+        """
+        # args 是**扁平的参数列表**（与 configQuery / configOfEntity 的约定一致），
+        # 不是嵌套数组。第一版写成 [["classes"]]，于是 SQF 侧
+        # `_args param [0, "classes", [""]]` 拿到的是数组而不是字符串，
+        # 引擎报"类型 数组，预期为 字符串"。
+        reply = chan.send({"cmd": "uiquery", "args": ["classes"]},
+                          timeout_s=25.0)
+        if not reply.ok:
+            return ToolResult.fail(
+                "列控件类名失败：%s\n（这一步依赖模组函数 a3mcp_fnc_uiQuery，"
+                "需要游戏侧已加载含它的 PBO）" % reply.error)
+        # reply.result **就是** SQF 回的负载，外面没有 {"ok":...} 那层包装 ——
+        # 我按自己的想象加了一个 ok 检查，于是每一次成功的回执都被判成"被拒绝"。
+        # 对照项目里的同类调用（config_tools 的 data = reply.result 直接用，
+        # exec_tools 直接 json.dumps(reply.result)）就能避免。
+        data = reply.result
+        # fn_uiQuery 回的是 [文本, 扫描数]
+        text = ""
+        if isinstance(data, list) and data:
+            first = data[0]
+            text = first if isinstance(first, str) else (
+                first.get("v", "") if isinstance(first, dict) else str(first))
+        elif isinstance(data, str):
+            text = data
+        return ToolResult.ok(
+            "界面控件类名（按数量降序）：\n\n%s\n\n"
+            "下一步：用 match_class 指定其中一个类名，即可拿到可点击的屏幕坐标。"
+            % (text or "(没有扫到任何控件)"), data)
+
     locator = UiLocator(chan)
 
     @reg.tool(
@@ -231,6 +271,11 @@ def register(reg: Registry, chan) -> None:  # noqa: ANN001
                           "description": "最多返回几个匹配，默认 10"},
                 "max_scan": {"type": "integer", "minimum": 1, "maximum": 500,
                              "description": "最多扫描多少个控件（默认 %d）。扫描成本正比于此值，调大可能很慢。" % MAX_SCAN},
+                "list_classes": {"type": "boolean",
+                                 "description": "改而**列出界面上所有控件的类名**"
+                                                "（按数量降序），不返回坐标。用于探索"
+                                                "未知界面：不知道目标控件叫什么时，"
+                                                "先列一遍类名，再按类名精确定位"},
             },
         },
         phase="input",
@@ -242,6 +287,9 @@ def register(reg: Registry, chan) -> None:  # noqa: ANN001
         ui_why = _health.require_ui(chan)
         if ui_why is not None:
             return ToolResult.fail(ui_why, {"headless": True})
+
+        if args.get("list_classes"):
+            return _list_classes()
 
         want_class = args.get("match_class")
         want_text = args.get("match_text")
