@@ -12,6 +12,23 @@ class CfgPatches {
     };
 };
 
+// ── 主菜单即可用：借助 CBA 的 Extended_PreInit（若装了 CBA） ──────────
+//
+// 背景：preInit / postInit 是**任务级**触发点，停在主菜单时不执行；而命令行
+// 的 -init= 参数在传递含引号/路径的代码时不可靠（实测 RPT 报"缺少 '"）。
+//
+// CBA 的 Extended_PreInit 在**游戏启动阶段**执行、不依赖任务，且完全走
+// config 而不过命令行，因此没有引号/转义问题。本仓库不依赖 CBA，
+// 但装了就用它把可用时机提前；没装则退回 -init= 与 preInit/postInit。
+class Extended_PreInit_EventHandlers {
+    class a3mcp {
+        // 分两级：先无条件打一行日志（证明 XEH 确实被触发、且时机早于/晚于
+        // 函数注册），再尝试调用。若只有第一行、没有第二行，说明此处函数
+        // 尚未定义 —— 那就该把调用推迟到 postInit（进任务）或改用其它钩子。
+        init = "diag_log '[A3MCP] XEH PreInit fired'; if !(isNil 'a3mcp_fnc_init') then { diag_log '[A3MCP] XEH: fnc ready, starting'; call a3mcp_fnc_init } else { diag_log '[A3MCP] XEH: fnc NOT ready yet' }";
+    };
+};
+
 class CfgFunctions {
     class a3mcp {
         tag = "a3mcp";

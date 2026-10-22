@@ -37,6 +37,18 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
                      f"{'已接通' if info.get('connected') else '未接通'}")
         if info.get("reason"):
             lines.append(f"  {info['reason']}")
+
+        # "已接通"只说 DLL 连上了 MCP，**不**说游戏里有人在执行命令。
+        # 这两件事曾经混为一谈，代价是：exec 一路超时，而状态页看着一切正常——
+        # 最坏的一种错，因为没有人会去找问题。
+        if info.get("connected"):
+            from adapters import health as _health
+            h = _health.probe(chan)
+            lines.append(f"  {_health.describe_line(h)}")
+            if h.get("executor") in ("never_started", "stalled"):
+                lines.append("    ↑ 需要游戏世界的命令（exec / config_*）此时不会被"
+                             "处理；DLL 直连能力（截图／输入／窗口）仍可用。")
+                lines.append("    详见 game_link 的输出。")
         lines.append("")
         lines.append(f"硬禁命令 {len(forbidden_list())} 条（任何开关都放不开）："
                      + "、".join(forbidden_list()[:8]) + " …")
@@ -75,21 +87,23 @@ def register_link_tool(reg: Registry, chan) -> None:  # noqa: ANN001
 
     @reg.tool(
         name="game_link",
-        description=("查看游戏侧扩展 DLL 的连接状态与内部队列（收件/发件/丢弃计数）。"
-                     "排查「命令发出去了但游戏没反应」时先用它："
-                     "inbox>0 说明命令到了 DLL 但没被取走；inbox=0 说明没送到 DLL。"),
+        description=("查看游戏侧扩展 DLL 的连接状态与内部队列（收件/发件/丢弃计数），"
+                     "并判定执行器是否真的在取命令。"
+                     "排查「命令发出去了但游戏没反应」时先用它。"),
         input_schema={"type": "object", "properties": {}},
         phase="control",
     )
     def _link(_args: dict) -> ToolResult:
-        # status 是 DLL 直接处理的函数名（不进 SQF 队列）
-        reply = chan.send({"cmd": "status", "args": []}, timeout_s=5.0)
-        if not reply.ok:
-            return ToolResult.fail("取 DLL 状态失败：%s" % reply.error)
-        data = reply.result
-        if not isinstance(data, dict):
-            return ToolResult.ok("DLL 返回了非预期内容：%s"
-                                 % _json.dumps(data, ensure_ascii=False)[:300])
+        # status 是 DLL **直连**命令（不进 SQF 队列，见 DLL 的 is_native_command）。
+        # 这一点是刻意的：诊断"为什么命令不通"恰恰发生在执行器没跑的时候，
+        # 诊断工具自己绝不能也走那条要依赖执行器的路。
+        from adapters import health as _health
+
+        h = _health.probe(chan)
+        if not h["available"]:
+            return ToolResult.fail("取 DLL 状态失败：%s" % h["error"], h)
+
+        data = h["raw"] or {}
         lines = [
             "游戏侧扩展状态：",
             "  connected : %s" % data.get("connected"),
@@ -104,8 +118,12 @@ def register_link_tool(reg: Registry, chan) -> None:  # noqa: ANN001
         if data.get("error"):
             lines.append(" last error: %s" % data["error"])
         lines.append("")
-        if data.get("inbox", 0) > 0:
-            lines.append("→ inbox>0：命令已到 DLL 但没被 SQF 取走（查轮询）")
-        else:
-            lines.append("→ inbox=0：命令未在 DLL 队列中（查 TCP 发送侧）")
-        return ToolResult.ok("\n".join(lines), data)
+        lines.append("→ " + h["summary"])
+
+        if h["executor"] in ("never_started", "stalled") and (data.get("inbox") or 0) > 0:
+            lines.append("   注意：inbox=%s 说明已经有命令堆在里面等着，"
+                         "这些命令**不会**被执行，只会一路超时。" % data["inbox"])
+        if h["executor"] == "running" and (data.get("inbox") or 0) > 3:
+            lines.append("   注意：心跳正常但 inbox 有积压，"
+                         "可能是某条命令执行时间很长堵住了循环。")
+        return ToolResult.ok("\n".join(lines), h)

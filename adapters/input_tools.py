@@ -91,6 +91,30 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                          "避免误操作其它程序）。请先切到游戏。")
         return ToolResult.ok("\n".join(lines), data)
 
+    @reg.tool(
+        name="focus_game",
+        description=("把游戏窗口切到前台。输入注入要求游戏在前台，而你查看 Agent "
+                     "输出时前台通常是浏览器 —— 用它在注入前抢回焦点。"
+                     "（Windows 只允许前台进程设置前台窗口，DLL 内部用 "
+                     "AttachThreadInput 绕过该限制。）"),
+        input_schema={"type": "object", "properties": {}},
+        phase="input",
+    )
+    def _focus(_args: dict) -> ToolResult:
+        reply = chan.send({"cmd": "focus_game", "args": []}, timeout_s=8.0)
+        if not reply.ok:
+            return ToolResult.fail("聚焦失败：%s" % reply.error)
+        data = reply.result if isinstance(reply.result, dict) else {}
+        if not data.get("ok"):
+            return ToolResult.fail("聚焦被拒绝：%s"
+                                   % (data.get("error") or "未知原因"))
+        if data.get("foreground"):
+            note = "（原本就是前台）" if data.get("already") else ""
+            return ToolResult.ok("游戏窗口已切到前台%s" % note, data)
+        return ToolResult.fail(
+            "已尝试切换，但游戏仍不是前台窗口。可能原因：屏幕锁定、"
+            "或系统拒绝了焦点切换（可再调一次）。", data)
+
     # ------------------------------------------------------------ 输入注入
 
     @reg.tool(
@@ -106,6 +130,8 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                 "button": {"type": "integer", "minimum": 0, "maximum": 2},
                 "hold_ms": {"type": "integer", "minimum": 0, "maximum": 5000,
                             "description": "按住时长，默认 30ms"},
+                "auto_focus": {"type": "boolean",
+                               "description": "注入前自动把游戏窗口切到前台（默认 false）"},
             },
             "required": ["x", "y"],
         },
@@ -118,7 +144,8 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         reply = chan.send({
             "cmd": "input_click",
             "args": [args["x"], args["y"], args.get("button", 0),
-                     args.get("hold_ms", 30)]}, timeout_s=8.0)
+                     args.get("hold_ms", 30),
+                     1 if args.get("auto_focus") else 0]}, timeout_s=12.0)
         audit("input_click", {"x": args["x"], "y": args["y"],
                               "button": args.get("button", 0), "ok": reply.ok})
         if not reply.ok:
@@ -141,6 +168,8 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                 "x2": {"type": "integer"}, "y2": {"type": "integer"},
                 "steps": {"type": "integer", "minimum": 1, "maximum": 100,
                           "description": "中间步数，默认 20（步数太少会被当作没拖拽）"},
+                "auto_focus": {"type": "boolean",
+                               "description": "注入前自动把游戏窗口切到前台（默认 false）"},
             },
             "required": ["x1", "y1", "x2", "y2"],
         },
@@ -178,6 +207,8 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
                 "scan": {"type": "integer", "minimum": 1, "maximum": 255},
                 "down": {"type": "boolean"},
                 "hold_ms": {"type": "integer", "minimum": 0, "maximum": 5000},
+                "auto_focus": {"type": "boolean",
+                               "description": "注入前自动把游戏窗口切到前台（默认 false）"},
             },
             "required": ["scan", "down"],
         },

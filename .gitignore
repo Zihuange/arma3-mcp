@@ -21,3 +21,11 @@ build/
 # 构建产物（由 tools/pack_mod.sh 生成，不入库）
 game/mod/addons/*.pbo
 game/mod/*.dll
+
+# 被运行中的游戏映射而删不掉的旧 DLL：Windows 允许改名让位、但不允许删除，
+# 于是重编译时只能先把它改名。重启游戏后即可删除。
+game/mod/*.dll.old-*
+
+# 运行时诊断与截图（DLL 生成，不入库）
+game/mod/arma3_mcp_diag.txt
+build/shots/

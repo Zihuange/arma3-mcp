@@ -139,6 +139,18 @@ std::atomic<long long> g_rx_lines{0};
 std::atomic<long long> g_tx_lines{0};
 std::atomic<long long> g_connects{0};
 
+// 执行器心跳：SQF 每轮 poll 都刷新这个时间戳。
+//
+// 为什么需要它：TCP 接通只说明 DLL 连上了 MCP，**不说明游戏里有东西在取命令**。
+// 主菜单、未加载任务、执行器脚本报错，都会让命令静静堆在 g_inq 里，调用方一路
+// 等到超时，而且分不清"游戏慢"和"执行器根本没跑"。有了心跳，status 就能直接
+// 回答这个问题。0 表示从未 poll 过（执行器从未启动）。
+std::atomic<long long> g_last_poll_ms{0};
+
+long long now_ms() {
+    return static_cast<long long>(GetTickCount64());
+}
+
 std::mutex g_err_mtx;
 std::string g_last_error;
 
@@ -332,13 +344,302 @@ void write_diag(const std::string &last) {
     std::fclose(f);
 }
 
+// 这些命令由 DLL 自己处理，**不进 SQF 队列**。
+//
+// 为什么：它们是纯 Windows 层操作（输入注入、截图、窗口几何），不需要游戏
+// 世界。走 SQF 会白白多一次 poll + callExtension 往返，而且**依赖执行器在跑**
+// —— 主菜单、未加载任务时就用不了，恰恰是这些能力最该可用的场景。
+struct JVal {
+    enum Kind { NUL, BOOL, NUM, STR, ARR, OBJ } kind = NUL;
+    bool b = false;
+    double num = 0;
+    std::string str;
+    std::vector<JVal> arr;
+    std::vector<std::pair<std::string, JVal> > obj;
+
+    const JVal *find(const std::string &key) const {
+        for (size_t i = 0; i < obj.size(); ++i) {
+            if (obj[i].first == key) return &obj[i].second;
+        }
+        return nullptr;
+    }
+    std::string as_str() const { return kind == STR ? str : std::string(); }
+    // 数组元素取值：既是数字也是字符串时都尽量给出可读形态
+    std::string item_str(size_t i) const {
+        if (kind != ARR || i >= arr.size()) return std::string();
+        const JVal &v = arr[i];
+        if (v.kind == STR) return v.str;
+        if (v.kind == NUM) {
+            char buf[64];
+            if (v.num == static_cast<double>(static_cast<long long>(v.num))) {
+                std::snprintf(buf, sizeof(buf), "%lld",
+                              static_cast<long long>(v.num));
+            } else {
+                std::snprintf(buf, sizeof(buf), "%g", v.num);
+            }
+            return std::string(buf);
+        }
+        if (v.kind == BOOL) return v.b ? "1" : "0";
+        return std::string();
+    }
+    const JVal *item(size_t i) const {
+        return (kind == ARR && i < arr.size()) ? &arr[i] : nullptr;
+    }
+};
+
+class JsonParser {
+public:
+    explicit JsonParser(const std::string &s) : s_(s), i_(0) {}
+
+    bool parse(JVal &out) {
+        skip();
+        if (!value(out)) return false;
+        skip();
+        return true;   // 尾部有剩余内容不算错（容忍）
+    }
+
+private:
+    const std::string &s_;
+    size_t i_;
+
+    void skip() {
+        while (i_ < s_.size()) {
+            char c = s_[i_];
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++i_; continue; }
+            break;
+        }
+    }
+    bool lit(const char *word) {
+        size_t n = std::strlen(word);
+        if (s_.compare(i_, n, word) == 0) { i_ += n; return true; }
+        return false;
+    }
+    bool value(JVal &out) {
+        skip();
+        if (i_ >= s_.size()) return false;
+        char c = s_[i_];
+        if (c == '{') return object(out);
+        if (c == '[') return array(out);
+        if (c == '"') { out.kind = JVal::STR; return string(out.str); }
+        if (lit("true"))  { out.kind = JVal::BOOL; out.b = true;  return true; }
+        if (lit("false")) { out.kind = JVal::BOOL; out.b = false; return true; }
+        if (lit("null"))  { out.kind = JVal::NUL; return true; }
+        return number(out);
+    }
+    bool string(std::string &out) {
+        if (i_ >= s_.size() || s_[i_] != '"') return false;
+        ++i_;
+        out.clear();
+        while (i_ < s_.size()) {
+            char c = s_[i_++];
+            if (c == '"') return true;
+            if (c == '\\' && i_ < s_.size()) {
+                char e = s_[i_++];
+                switch (e) {
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    case 'b': out += '\b'; break;
+                    case 'f': out += '\f'; break;
+                    case 'u': {
+                        // \uXXXX：只处理 BMP 内的 ASCII 情况，其余原样丢弃
+                        if (i_ + 4 <= s_.size()) {
+                            std::string hex = s_.substr(i_, 4);
+                            i_ += 4;
+                            unsigned code = static_cast<unsigned>(
+                                std::strtoul(hex.c_str(), nullptr, 16));
+                            if (code < 0x80) {
+                                out += static_cast<char>(code);
+                            } else {
+                                out += '?';   // 非 ASCII 不在此处还原
+                            }
+                        }
+                        break;
+                    }
+                    default: out += e; break;
+                }
+                continue;
+            }
+            out += c;
+        }
+        return false;   // 字符串未闭合
+    }
+    bool number(JVal &out) {
+        const char *start = s_.c_str() + i_;
+        char *end = nullptr;
+        double v = std::strtod(start, &end);
+        if (end == start) return false;
+        i_ += static_cast<size_t>(end - start);
+        out.kind = JVal::NUM;
+        out.num = v;
+        return true;
+    }
+    bool array(JVal &out) {
+        if (s_[i_] != '[') return false;
+        ++i_;
+        out.kind = JVal::ARR;
+        skip();
+        if (i_ < s_.size() && s_[i_] == ']') { ++i_; return true; }
+        while (i_ < s_.size()) {
+            JVal v;
+            if (!value(v)) return false;
+            out.arr.push_back(v);
+            skip();
+            if (i_ < s_.size() && s_[i_] == ',') { ++i_; skip(); continue; }
+            if (i_ < s_.size() && s_[i_] == ']') { ++i_; return true; }
+            return false;
+        }
+        return false;
+    }
+    bool object(JVal &out) {
+        if (s_[i_] != '{') return false;
+        ++i_;
+        out.kind = JVal::OBJ;
+        skip();
+        if (i_ < s_.size() && s_[i_] == '}') { ++i_; return true; }
+        while (i_ < s_.size()) {
+            skip();
+            std::string key;
+            if (!string(key)) return false;
+            skip();
+            if (i_ >= s_.size() || s_[i_] != ':') return false;
+            ++i_;
+            JVal v;
+            if (!value(v)) return false;
+            out.obj.push_back(std::make_pair(key, v));
+            skip();
+            if (i_ < s_.size() && s_[i_] == ',') { ++i_; continue; }
+            if (i_ < s_.size() && s_[i_] == '}') { ++i_; return true; }
+            return false;
+        }
+        return false;
+    }
+};
+
+// 构造一条 ack 回执 JSON。result_raw 应是**已序列化的 JSON 值**
+// （形如 {"ok":true,...}），直接嵌入而不加引号。
+std::string make_ack(const std::string &cid, bool ok,
+                     const std::string &result_raw) {
+    std::string out = "{\"t\":\"ack\",\"cid\":\"" + json_escape(cid) + "\","
+                      "\"ok\":" + (ok ? "true" : "false");
+    if (ok) {
+        out += ",\"result\":" + (result_raw.empty() ? "null" : result_raw);
+    } else {
+        out += ",\"error\":\"" + json_escape(result_raw) + "\"";
+    }
+    out += "}";
+    return out;
+}
+// 前向声明：下面的直连分发要调用这些实现，而它们的定义在文件靠后处。
+// （C++ 需要先见到声明；这里集中列出，避免为了顺序而把实现搬来搬去。）
+std::string window_info();
+std::string focus_game();
+std::string capture_window(const std::string &out_path, int max_width);
+std::string input_move(int x, int y);
+std::string input_click(int x, int y, int button, int hold_ms);
+std::string input_key(int scan, bool down, int hold_ms);
+std::string input_drag(int x1, int y1, int x2, int y2, int steps);
+std::string make_status();
+std::string json_ok(const std::string &extra);
+std::string json_err(const std::string &message);
+
+bool is_native_command(const std::string &name) {
+    // status 必须在这里：它是**诊断链路本身**用的命令。
+    //
+    // 曾经把它漏在直连白名单外，结果它进 g_inq 等 SQF 取走 —— 而"诊断为什么
+    // 命令不通"恰恰发生在执行器没跑的时候，于是诊断工具自己先超时，陷入
+    // "要查不通的原因，得先用一个不通的工具"的死结。诊断路径必须比被诊断的
+    // 对象更可靠：DLL 自己的状态，DLL 自己就能答，不该依赖游戏世界里有没有
+    // 人接电话。
+    return name == "window_info" || name == "focus_game" ||
+           name == "input_move"  || name == "input_click" ||
+           name == "input_key"   || name == "input_drag" ||
+           name == "capture"     || name == "status";
+}
+
+// 从 args 数组里取一个字符串参数
+std::string arg_str(const JVal *args, size_t i) {
+    const JVal *v = args ? args->item(i) : nullptr;
+    if (!v) return std::string();
+    if (v->kind == JVal::STR) return v->str;
+    if (v->kind == JVal::NUM) return v->item_str(0) == "" ? std::string() : v->item_str(0);
+    return std::string();
+}
+
+int arg_int(const JVal *args, size_t i, int def) {
+    const JVal *v = args ? args->item(i) : nullptr;
+    if (!v) return def;
+    if (v->kind == JVal::NUM) return static_cast<int>(v->num);
+    if (v->kind == JVal::BOOL) return v->b ? 1 : 0;
+    if (v->kind == JVal::STR) return std::atoi(v->str.c_str());
+    return def;
+}
+
+// 执行一条 DLL 直连命令，返回**已序列化的 JSON 结果**
+std::string run_native(const std::string &name, const JVal *args) {
+    if (name == "status")      return make_status();
+    if (name == "window_info") return window_info();
+    if (name == "focus_game")  return focus_game();
+    if (name == "capture") {
+        std::string path = arg_str(args, 0);
+        if (path.empty()) return json_err("capture 需要输出路径");
+        return capture_window(path, arg_int(args, 1, 0));
+    }
+    if (name == "input_move") {
+        return input_move(arg_int(args, 0, 0), arg_int(args, 1, 0));
+    }
+    if (name == "input_click") {
+        int autofocus = arg_int(args, 4, 0);
+        if (autofocus) {
+            std::string f = focus_game();
+            if (f.find("\"foreground\":true") == std::string::npos) {
+                return json_err("自动聚焦失败，前台仍不是游戏窗口");
+            }
+        }
+        return input_click(arg_int(args, 0, 0), arg_int(args, 1, 0),
+                           arg_int(args, 2, 0), arg_int(args, 3, 30));
+    }
+    if (name == "input_key") {
+        return input_key(arg_int(args, 0, 0), arg_int(args, 1, 0) != 0,
+                         arg_int(args, 2, 0));
+    }
+    if (name == "input_drag") {
+        return input_drag(arg_int(args, 0, 0), arg_int(args, 1, 0),
+                          arg_int(args, 2, 0), arg_int(args, 3, 0),
+                          arg_int(args, 4, 20));
+    }
+    return json_err("未实现的直连命令：" + name);
+}
+
 void handle_server_line(const std::string &line) {
     // MCP 下发：{"t":"cmd","cid":"...","cmd":"...","args":[...]}
-    // 转成 SQF 侧要的形态原样入队（由 SQF 自己解析 JSON，DLL 不解释内容）
     if (line.empty()) return;
+
+    // 先看是否 DLL 能自己处理（输入/截图/窗口），避免绕 SQF
+    JVal msg;
+    if (msg.kind == JVal::NUL && JsonParser(line).parse(msg) &&
+        msg.kind == JVal::OBJ) {
+        const JVal *t = msg.find("t");
+        const JVal *c = msg.find("cmd");
+        if (t && t->as_str() == "cmd" && c && is_native_command(c->as_str())) {
+            const JVal *cid_v = msg.find("cid");
+            std::string cid = cid_v ? cid_v->as_str() : "";
+            const JVal *args = msg.find("args");
+            std::string result = run_native(c->as_str(), args);
+            // 结果自身带 ok 字段；这里统一包成 ack
+            bool ok = result.find("\"ok\":false") == std::string::npos;
+            g_outq.push(make_ack(cid, true, result));
+            g_rx_lines.fetch_add(1);
+            write_diag(line);
+            (void)ok;
+            return;
+        }
+    }
+
+    // 其余命令仍交给 SQF 执行（表达式、config 查询等需要游戏世界）
     g_inq.push(line);
     g_rx_lines.fetch_add(1);
-    write_diag(line);          // 诊断：命令确实到了 DLL
+    write_diag(line);
 }
 
 void network_loop() {
@@ -419,14 +720,20 @@ std::string make_status() {
         cfg = g_cfg;
     }
     char buf[1024];
+    // poll_ms_ago: 距今多少毫秒前执行器取过命令；-1 表示从未取过（执行器未启动）。
+    // 调用方用 "> 2000ms 或 -1" 判定执行器没在跑，而不是靠 inbox 猜。
+    long long last_poll = g_last_poll_ms.load();
+    long long poll_ago = (last_poll == 0) ? -1 : (now_ms() - last_poll);
     std::snprintf(buf, sizeof(buf),
         "{\"ok\":true,\"connected\":%s,\"addr\":\"%s\",\"ver\":\"%s\","
         "\"inbox\":%zu,\"outbox\":%zu,\"dropped\":%zu,"
-        "\"rx\":%lld,\"tx\":%lld,\"connects\":%lld,\"error\":\"%s\"}",
+        "\"rx\":%lld,\"tx\":%lld,\"connects\":%lld,\"poll_ms_ago\":%lld,"
+        "\"error\":\"%s\"}",
         g_connected.load() ? "true" : "false",
         json_escape(cfg.addr()).c_str(), kVersion,
         g_inq.size(), g_outq.size(), g_inq.dropped.load(),
         g_rx_lines.load(), g_tx_lines.load(), g_connects.load(),
+        poll_ago,
         json_escape(get_error()).c_str());
     return std::string(buf);
 }
@@ -641,6 +948,54 @@ std::string window_info() {
     return std::string(buf);
 }
 
+// ------------------------------------------------------------------ 窗口聚焦
+
+// 把游戏窗口切到前台。
+//
+// 为什么需要绕：Windows 只允许**当前前台进程**调用 SetForegroundWindow 成功，
+// 否则它只会闪一下任务栏图标。绕过办法是把自己附加到前台窗口的输入队列
+// （AttachThreadInput），使本线程"看起来"属于前台线程，再调用即可生效。
+// 这是长期存在的系统行为，不是权宜 hack。
+std::string focus_game() {
+    HWND hwnd = find_game_window();
+    if (!hwnd) return json_err("找不到游戏窗口");
+
+    if (IsIconic(hwnd)) {
+        ShowWindow(hwnd, SW_RESTORE);
+    }
+
+    HWND fg = GetForegroundWindow();
+    if (fg == hwnd) {
+        return json_ok("\"foreground\":true,\"already\":true");
+    }
+
+    DWORD fg_thread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    DWORD my_thread = GetCurrentThreadId();
+    bool attached = false;
+    if (fg_thread != 0 && fg_thread != my_thread) {
+        attached = AttachThreadInput(my_thread, fg_thread, TRUE) != 0;
+    }
+
+    BOOL ok = SetForegroundWindow(hwnd);
+    BringWindowToTop(hwnd);
+    SetActiveWindow(hwnd);
+
+    if (attached) {
+        AttachThreadInput(my_thread, fg_thread, FALSE);
+    }
+
+    // 等窗口管理器把切换做完，否则紧接着的注入可能仍打到旧前台窗口上
+    Sleep(120);
+
+    bool now_fg = (GetForegroundWindow() == hwnd);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+        "{\"ok\":true,\"foreground\":%s,\"set_ok\":%s,\"attached\":%s}",
+        now_fg ? "true" : "false", ok ? "true" : "false",
+        attached ? "true" : "false");
+    return std::string(buf);
+}
+
 // ------------------------------------------------------------------ 视觉捕捉
 
 ULONG_PTR g_gdiplus_token = 0;
@@ -759,12 +1114,31 @@ std::string capture_window(const std::string &out_path, int max_width) {
     return std::string(buf);
 }
 
+// ===========================================================================
+// 极简 JSON 解析（仅覆盖 MCP 下发的固定结构）
+//
+// ## 为什么需要它
+//
+// 输入注入与截图是 DLL 自己的能力，但 MCP 下发的命令原先统一入队交给 SQF，
+// 再让 SQF 用 callExtension 转回来 —— 白白绕一圈，而且**依赖 SQF 执行器在跑**
+// （主菜单、未加载任务时就用不了，正是那两项能力最该可用的场景）。
+//
+// 要让 DLL 直接处理，就得从消息里取出 cid 与 args，于是需要解析 JSON。
+// 这里只实现必要的子集：对象/数组/字符串/数字/布尔/null，足以覆盖
+// {"t":"cmd","cid":"...","cmd":"...","args":[...]} 这一种结构。
+// 不做通用 JSON 库，也不处理任何畸形输入之外的情况。
+// ===========================================================================
+
+
 std::string handle_call(const std::string &fn,
                         const std::vector<std::string> &args) {
     if (fn == "status") {
         return make_status();
     }
     if (fn == "poll") {
+        // 执行器心跳：能被 poll 到，就说明游戏里有脚本在跑。注意即使队列为空
+        // 也要刷新——"活着但没活干"和"死了"必须能区分开。
+        g_last_poll_ms.store(now_ms());
         std::string line;
         if (!g_inq.pop(line)) return "";   // 空串 = 无命令（SQF 侧据此跳过）
         return line;
@@ -784,6 +1158,9 @@ std::string handle_call(const std::string &fn,
     if (fn == "window_info") {
         return window_info();
     }
+    if (fn == "focus_game") {
+        return focus_game();
+    }
     if (fn.rfind("input_move", 0) == 0) {
         std::vector<int> v = tail_ints(fn.substr(10));
         if (v.size() < 2) return json_err("input_move 需要 x y");
@@ -791,7 +1168,16 @@ std::string handle_call(const std::string &fn,
     }
     if (fn.rfind("input_click", 0) == 0) {
         std::vector<int> v = tail_ints(fn.substr(11));
-        if (v.size() < 2) return json_err("input_click 需要 x y [button] [hold_ms]");
+        if (v.size() < 2) return json_err("input_click 需要 x y [button] [hold_ms] [autofocus]");
+        // 第 5 个参数是 auto_focus：注入前先抢焦点。
+        // 否则前台不是游戏时会被保护性拒绝（这是对的，但用户不在游戏前时
+        // 就完全用不了，所以给调用方一个显式选择）。
+        if (v.size() > 4 && v[4] != 0) {
+            std::string f = focus_game();
+            if (f.find("\"foreground\":true") == std::string::npos) {
+                return json_err("自动聚焦失败，前台仍不是游戏窗口");
+            }
+        }
         return input_click(v[0], v[1],
                            v.size() > 2 ? v[2] : 0,
                            v.size() > 3 ? v[3] : 30);

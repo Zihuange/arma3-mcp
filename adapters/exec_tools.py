@@ -71,7 +71,21 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
                        "channel": reply.channel, "error": reply.error[:200]})
 
         if not reply.ok:
-            return ToolResult.fail("执行失败：%s" % reply.error, reply.to_dict())
+            # 超时是这里最常见、也最没有信息量的失败：只说"没等到回执"，
+            # 让人分不清是网络问题还是游戏里根本没人执行。补一次**直连**的
+            # status 探测（不依赖执行器，所以执行器死着也答得出来），
+            # 把结论直接写进错误里——不该让调用方自己去猜去哪查。
+            from adapters import health as _health
+            h = _health.probe(chan)
+            hint = ""
+            if h.get("executor") in ("never_started", "stalled"):
+                hint = ("\n\n诊断：%s" % h["summary"])
+            elif h.get("available"):
+                hint = ("\n\n诊断：%s ——命令已送达 DLL 却没能拿到回执，"
+                        "多半是这条命令在游戏侧执行出错或耗时过长。"
+                        % _health.describe_line(h))
+            return ToolResult.fail("执行失败：%s%s" % (reply.error, hint),
+                                   reply.to_dict())
         return ToolResult.ok(
             "已执行（cid=%s，%d ms）\n结果：%s"
             % (reply.cid, reply.elapsed_ms,
