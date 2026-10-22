@@ -25,6 +25,63 @@ from guard import audit
 DEFAULT_BATCH_MAX = 8
 HARD_BATCH_MAX = 32
 
+# ---------------------------------------------------------------------------
+# 无头环境（专用服务器）下的"静默无效"警告
+#
+# 普查发现有一类表达式在服务器上**不报错、却什么都不会发生**（见
+# docs/server-capabilities.md）：
+#   · hint / systemChat 一类 → 返回 nil，无效果（客户端上会弹消息）
+#   · 引用 player 的表达式 → 返回**看似合理的假值**（getPos player → [0,0,0]、
+#     side player → "SIDE"），调用方完全可能当成真实数据
+#
+# 这与本项目一路在打击的失败模式同源：没有错误信息，只有不对的结果。
+#
+# ⚠ 两个清单**只收实测验证过的条目**。没验证过的不往里加 —— 误报会让调用方
+# 开始忽略全部警告，那比没有警告更糟。
+_HEADLESS_NO_EFFECT = frozenset({
+    "hint", "systemchat",          # 实测：返回 nil、不报错、屏幕上不会有任何东西
+    "forcemap", "openmap",         # 实测：同上（地图是给玩家看的，服务器上没有屏幕）
+})
+
+# 这些标识符一旦出现在表达式里，无头环境下的结果就不可信（没有玩家可言）。
+_HEADLESS_PLAYER_TOKENS = frozenset({
+    "player",                      # 实测：getPos player→[0,0,0]；side player→"SIDE"
+})
+
+
+def headless_caveat(expr: str, chan) -> str:  # noqa: ANN001
+    """表达式在无头环境下会"静默无效"时，返回一段附注；否则返回空串。
+
+    先做**纯字符串**匹配再探测形态：绝大多数表达式不命中清单，就不必为它们
+    多花一次往返（形态探测虽有缓存，仍是一次 DLL 调用）。
+    """
+    import re as _re
+
+    tokens = {t.lower() for t in _re.findall(r"[A-Za-z_][A-Za-z0-9_]*", expr)}
+    no_effect = sorted(tokens & _HEADLESS_NO_EFFECT)
+    playerish = sorted(tokens & _HEADLESS_PLAYER_TOKENS)
+    if not no_effect and not playerish:
+        return ""
+
+    from adapters import health as _health
+    has_ui, _why = _health.has_ui(chan)
+    if has_ui:
+        return ""                  # 客户端上这些都正常，提示就是噪音
+
+    lines = ["", "⚠ 无头环境提示："]
+    if no_effect:
+        lines.append(
+            "  这个表达式用到 %s —— 在专用服务器上它**返回 nil 且不报错**，"
+            "屏幕上不会有任何东西（需要进程内有玩家才有意义）。"
+            % "、".join(no_effect))
+    if playerish:
+        lines.append(
+            "  它引用了 %s，而当前环境**没有玩家**（isNull player 为真）："
+            "相关返回值是**假值而非报错**，例如 getPos player 会给出 [0,0,0]。"
+            "不要把这类结果当成真实数据。"
+            % "、".join(playerish))
+    return "\n".join(lines)
+
 
 def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # noqa: ANN001
     """注册执行层工具。chan 由调用方注入（P0 是 NullChannel）。"""
@@ -70,6 +127,8 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
                        "ok": reply.ok, "elapsed_ms": reply.elapsed_ms,
                        "channel": reply.channel, "error": reply.error[:200]})
 
+        caveat = headless_caveat(expr, chan)
+
         if not reply.ok:
             # 超时是这里最常见、也最没有信息量的失败：只说"没等到回执"，
             # 让人分不清是网络问题还是游戏里根本没人执行。补一次**直连**的
@@ -87,9 +146,9 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
             return ToolResult.fail("执行失败：%s%s" % (reply.error, hint),
                                    reply.to_dict())
         return ToolResult.ok(
-            "已执行（cid=%s，%d ms）\n结果：%s"
+            "已执行（cid=%s，%d ms）\n结果：%s%s"
             % (reply.cid, reply.elapsed_ms,
-               json.dumps(reply.result, ensure_ascii=False)[:1500]),
+               json.dumps(reply.result, ensure_ascii=False)[:1500], caveat),
             reply.to_dict())
 
     @reg.tool(

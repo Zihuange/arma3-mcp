@@ -15,8 +15,17 @@ Python 标准库。这条约束由 `tools/check_independence.py` 作为可执行
 |---|---|---|
 | **P0** | MCP 协议骨架、自带命令库、知识/校验/闸门、全量自检、独立性验证 | ✅ 已完成 |
 | **P1** | 游戏内执行通道（扩展 DLL + SQF 执行器），实机闭环 | ✅ 已完成 |
-| **P2** | 用户操作模拟（UI 控件、原生输入注入、坐标校准） | 🔶 进行中 |
-| **P3** | 专用服务器形态（TCP 通道） | 🔶 进行中 |
+| **P2** | 用户操作模拟（UI 控件、原生输入注入、坐标校准） | ✅ 已完成 |
+| **P3** | 专用服务器形态（TCP 通道） | ✅ 已完成 |
+
+P2 的坐标校准（`ui_locate`）已真机闭环；UI **写入**只对自建控件可靠，引擎内建 UI
+会静默忽略 —— 那是能力边界而非缺陷，见 [`docs/decisions.md`](docs/decisions.md) D24。
+P3 已在真实 `arma3server_x64.exe` 上打通（`exec` / `config` 可用、UI 工具明确拒绝）。
+两边都还剩若干**未验证项**，逐条列在 [`docs/onmachine.md`](docs/onmachine.md)。
+
+想先了解这个项目怎么一步步走到现在的，看 [`docs/history.md`](docs/history.md)
+—— 按阶段梳理，重点记转折点与代价最高的教训。
+还剩哪些没做、以及每一项怎么判，看 [`docs/backlog.md`](docs/backlog.md)。
 
 ### 现在到底能做什么（按"要不要游戏世界"分）
 
@@ -180,7 +189,7 @@ adapters/     执行通道抽象（P0 为 NullChannel）+ 执行/控制面工具
 data/         commands.json.xz（自带命令库）、capabilities.json（实测能力边界）
 tools/        build_commands.py（生成数据）、check_independence.py（独立性）
 tests/        111 个用例，含对全部 5181 条命令的自检
-docs/         decisions / deploy / safety / provenance
+docs/         history（复盘）/ backlog（待办）/ server-capabilities / decisions / deploy / safety / provenance
 ```
 
 ## 数据来源与致谢

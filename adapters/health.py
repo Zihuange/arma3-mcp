@@ -26,7 +26,16 @@ DLL 的 `status` 是**直连命令**（不进 SQF 队列，见 DLL 侧 is_native
 
 from __future__ import annotations
 
+import weakref
 from typing import Any, Optional
+
+
+def _ref(obj):  # noqa: ANN001
+    """拿一个弱引用；对象不支持弱引用时退化为永不匹配的哨兵。"""
+    try:
+        return weakref.ref(obj)
+    except TypeError:
+        return lambda: None
 
 # 判定"心跳停滞"的阈值。SQF 轮询周期是 0.1s，这里给到 3s：
 # 30 个周期的余量，足以容忍加载卡顿、GC、切窗口这类短暂停顿，
@@ -155,7 +164,12 @@ def describe_line(health: dict) -> str:
 # 对象不变）之后，缓存里仍是"有 UI"的旧判定，于是 UI 工具照旧放行 —— 修复明明
 # 已经生效，却因为缓存而看不出效果。status 里的 connects 每次重连都会增长，
 # 拿它入键，重连即自动失效，不需要谁来记得手动清。
-_UI_CACHE: dict[tuple, tuple[bool, str]] = {}
+# 键是 (id(chan), connects)，但值里**同时存一个弱引用**。
+#
+# 为什么不能只按 id：id() 在对象被回收后会被复用，于是新建的通道可能读到旧对象的
+# 判定（测试里就撞到了 —— 客户端通道被判成无头，"本不该出现的警告"照样出现）。
+# 用弱引用确认是同一个对象，才敢用这份缓存。
+_UI_CACHE: dict[tuple, tuple] = {}
 
 
 def has_ui(chan, refresh: bool = False) -> tuple[bool, str]:  # noqa: ANN001
@@ -182,8 +196,11 @@ def has_ui(chan, refresh: bool = False) -> tuple[bool, str]:  # noqa: ANN001
         return (False, "DLL 报告未连接，无法判断进程形态")
 
     key = (id(chan), raw.get("connects"))
-    if not refresh and key in _UI_CACHE:
-        return _UI_CACHE[key]
+    if not refresh:
+        hit = _UI_CACHE.get(key)
+        # 弱引用还活着、且确实指向同一个通道 → 可用；否则当未命中重新判。
+        if hit is not None and hit[0]() is chan:
+            return hit[1]
 
     # 2) 有没有窗口？
     try:
@@ -194,7 +211,7 @@ def has_ui(chan, refresh: bool = False) -> tuple[bool, str]:  # noqa: ANN001
     if getattr(win, "ok", False) and isinstance(win.result, dict) \
             and win.result.get("ok"):
         result = (True, "")
-        _UI_CACHE[key] = result
+        _UI_CACHE[key] = (_ref(chan), result)
         return result
 
     detail = ""
@@ -209,7 +226,7 @@ def has_ui(chan, refresh: bool = False) -> tuple[bool, str]:  # noqa: ANN001
     # 此处结论已由 MCP 侧给出，不需要它。detail 仅用于日志追溯。
     del detail
     result = (False, "扩展已加载，但找不到游戏窗口 —— 判定为**无头形态**（专用服务器）")
-    _UI_CACHE[key] = result
+    _UI_CACHE[key] = (_ref(chan), result)
     return result
 
 

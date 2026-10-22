@@ -530,6 +530,9 @@ queued"，第二次 poll 必须为空），SQF 侧靠实际执行验证。
 
 这条路径**尚未排查**，属于已知未完成的独立问题。
 
+> **后续（D23）**：已排查并修复 —— 是两层 bug（MCP 侧参数位置错位 +
+> `configClasses` 少传 condition），现已全线通过。
+
 ---
 
 ## D23 config 查询卡住：两层 bug，都只在真机显形
@@ -707,7 +710,8 @@ class='#32770'  client=402x154  title='Arma 3 Console version 2.22.154045 x64 :'
 `-autoInit` 在服务器上被跳过（控制台原话："Autolnit is supported only for
 persistent missions!"），所以任务没有自动加载、执行器没起来。这不影响形态判定
 （它只用 DLL 直连命令），但意味着**服务器上的 `exec` / `config` 尚未验证** ——
-这条留待后续。
+> **后续（D28）**：已在真实专用服务器上跑通 —— `exec` 返回 `worldName="Altis"`，
+> `config_tree` 返回 8392 个子类。
 
 **教训（同一轮里栽两次，值得单列）**：两次都是"我以为我知道"，一次猜窗口类名、
 一次漏了缓存维度。真机在几秒内就把两个都驳倒了。凡是**关于外部环境的事实**
@@ -734,4 +738,4 @@ persistent missions!"），所以任务没有自动加载、执行器没起来�
 **仍未验证**：服务器上的 `exec` / `config_*`。`-autoInit` 在服务器上会被跳过
 （"supported only for persistent missions"），任务没有自动加载、执行器没起来。
 形态判定不依赖执行器（只用 DLL 直连命令），所以这一条可以独立通过 —— 但也意味着
-**世界层命令在服务器上还没跑过**，留待后续。
+> **后续（D28）**：已经在服务器上跑过并通过。
