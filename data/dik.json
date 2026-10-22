@@ -1,0 +1,582 @@
+{
+ "source": "Windows SDK 10.0.22621.0 um/dinput.h",
+ "note": "DIK 扫描码 -> 名称。Arma 3 的 input_key 用它，不是虚拟键码。",
+ "keys": {
+  "1": {
+   "name": "ESCAPE",
+   "label": ""
+  },
+  "2": {
+   "name": "1",
+   "label": ""
+  },
+  "3": {
+   "name": "2",
+   "label": ""
+  },
+  "4": {
+   "name": "3",
+   "label": ""
+  },
+  "5": {
+   "name": "4",
+   "label": ""
+  },
+  "6": {
+   "name": "5",
+   "label": ""
+  },
+  "7": {
+   "name": "6",
+   "label": ""
+  },
+  "8": {
+   "name": "7",
+   "label": ""
+  },
+  "9": {
+   "name": "8",
+   "label": ""
+  },
+  "10": {
+   "name": "9",
+   "label": ""
+  },
+  "11": {
+   "name": "0",
+   "label": ""
+  },
+  "12": {
+   "name": "MINUS",
+   "label": "- on main keyboard"
+  },
+  "13": {
+   "name": "EQUALS",
+   "label": ""
+  },
+  "14": {
+   "name": "BACK",
+   "label": "backspace"
+  },
+  "15": {
+   "name": "TAB",
+   "label": ""
+  },
+  "16": {
+   "name": "Q",
+   "label": ""
+  },
+  "17": {
+   "name": "W",
+   "label": ""
+  },
+  "18": {
+   "name": "E",
+   "label": ""
+  },
+  "19": {
+   "name": "R",
+   "label": ""
+  },
+  "20": {
+   "name": "T",
+   "label": ""
+  },
+  "21": {
+   "name": "Y",
+   "label": ""
+  },
+  "22": {
+   "name": "U",
+   "label": ""
+  },
+  "23": {
+   "name": "I",
+   "label": ""
+  },
+  "24": {
+   "name": "O",
+   "label": ""
+  },
+  "25": {
+   "name": "P",
+   "label": ""
+  },
+  "26": {
+   "name": "LBRACKET",
+   "label": ""
+  },
+  "27": {
+   "name": "RBRACKET",
+   "label": ""
+  },
+  "28": {
+   "name": "RETURN",
+   "label": "Enter on main keyboard"
+  },
+  "29": {
+   "name": "LCONTROL",
+   "label": ""
+  },
+  "30": {
+   "name": "A",
+   "label": ""
+  },
+  "31": {
+   "name": "S",
+   "label": ""
+  },
+  "32": {
+   "name": "D",
+   "label": ""
+  },
+  "33": {
+   "name": "F",
+   "label": ""
+  },
+  "34": {
+   "name": "G",
+   "label": ""
+  },
+  "35": {
+   "name": "H",
+   "label": ""
+  },
+  "36": {
+   "name": "J",
+   "label": ""
+  },
+  "37": {
+   "name": "K",
+   "label": ""
+  },
+  "38": {
+   "name": "L",
+   "label": ""
+  },
+  "39": {
+   "name": "SEMICOLON",
+   "label": ""
+  },
+  "40": {
+   "name": "APOSTROPHE",
+   "label": ""
+  },
+  "41": {
+   "name": "GRAVE",
+   "label": "accent grave"
+  },
+  "42": {
+   "name": "LSHIFT",
+   "label": ""
+  },
+  "43": {
+   "name": "BACKSLASH",
+   "label": ""
+  },
+  "44": {
+   "name": "Z",
+   "label": ""
+  },
+  "45": {
+   "name": "X",
+   "label": ""
+  },
+  "46": {
+   "name": "C",
+   "label": ""
+  },
+  "47": {
+   "name": "V",
+   "label": ""
+  },
+  "48": {
+   "name": "B",
+   "label": ""
+  },
+  "49": {
+   "name": "N",
+   "label": ""
+  },
+  "50": {
+   "name": "M",
+   "label": ""
+  },
+  "51": {
+   "name": "COMMA",
+   "label": ""
+  },
+  "52": {
+   "name": "PERIOD",
+   "label": ". on main keyboard"
+  },
+  "53": {
+   "name": "SLASH",
+   "label": "/ on main keyboard"
+  },
+  "54": {
+   "name": "RSHIFT",
+   "label": ""
+  },
+  "55": {
+   "name": "MULTIPLY",
+   "label": "* on numeric keypad"
+  },
+  "56": {
+   "name": "LMENU",
+   "label": "left Alt"
+  },
+  "57": {
+   "name": "SPACE",
+   "label": ""
+  },
+  "58": {
+   "name": "CAPITAL",
+   "label": ""
+  },
+  "59": {
+   "name": "F1",
+   "label": ""
+  },
+  "60": {
+   "name": "F2",
+   "label": ""
+  },
+  "61": {
+   "name": "F3",
+   "label": ""
+  },
+  "62": {
+   "name": "F4",
+   "label": ""
+  },
+  "63": {
+   "name": "F5",
+   "label": ""
+  },
+  "64": {
+   "name": "F6",
+   "label": ""
+  },
+  "65": {
+   "name": "F7",
+   "label": ""
+  },
+  "66": {
+   "name": "F8",
+   "label": ""
+  },
+  "67": {
+   "name": "F9",
+   "label": ""
+  },
+  "68": {
+   "name": "F10",
+   "label": ""
+  },
+  "69": {
+   "name": "NUMLOCK",
+   "label": ""
+  },
+  "70": {
+   "name": "SCROLL",
+   "label": "Scroll Lock"
+  },
+  "71": {
+   "name": "NUMPAD7",
+   "label": ""
+  },
+  "72": {
+   "name": "NUMPAD8",
+   "label": ""
+  },
+  "73": {
+   "name": "NUMPAD9",
+   "label": ""
+  },
+  "74": {
+   "name": "SUBTRACT",
+   "label": "- on numeric keypad"
+  },
+  "75": {
+   "name": "NUMPAD4",
+   "label": ""
+  },
+  "76": {
+   "name": "NUMPAD5",
+   "label": ""
+  },
+  "77": {
+   "name": "NUMPAD6",
+   "label": ""
+  },
+  "78": {
+   "name": "ADD",
+   "label": "+ on numeric keypad"
+  },
+  "79": {
+   "name": "NUMPAD1",
+   "label": ""
+  },
+  "80": {
+   "name": "NUMPAD2",
+   "label": ""
+  },
+  "81": {
+   "name": "NUMPAD3",
+   "label": ""
+  },
+  "82": {
+   "name": "NUMPAD0",
+   "label": ""
+  },
+  "83": {
+   "name": "DECIMAL",
+   "label": ". on numeric keypad"
+  },
+  "86": {
+   "name": "OEM_102",
+   "label": "<> or \\| on RT 102-key keyboard (Non-U.S.)"
+  },
+  "87": {
+   "name": "F11",
+   "label": ""
+  },
+  "88": {
+   "name": "F12",
+   "label": ""
+  },
+  "100": {
+   "name": "F13",
+   "label": "(NEC PC98)"
+  },
+  "101": {
+   "name": "F14",
+   "label": "(NEC PC98)"
+  },
+  "102": {
+   "name": "F15",
+   "label": "(NEC PC98)"
+  },
+  "112": {
+   "name": "KANA",
+   "label": "(Japanese keyboard)"
+  },
+  "115": {
+   "name": "ABNT_C1",
+   "label": "/? on Brazilian keyboard"
+  },
+  "121": {
+   "name": "CONVERT",
+   "label": "(Japanese keyboard)"
+  },
+  "123": {
+   "name": "NOCONVERT",
+   "label": "(Japanese keyboard)"
+  },
+  "125": {
+   "name": "YEN",
+   "label": "(Japanese keyboard)"
+  },
+  "126": {
+   "name": "ABNT_C2",
+   "label": "Numpad . on Brazilian keyboard"
+  },
+  "141": {
+   "name": "NUMPADEQUALS",
+   "label": "= on numeric keypad (NEC PC98)"
+  },
+  "144": {
+   "name": "PREVTRACK",
+   "label": "Previous Track (DIK_CIRCUMFLEX on Japanese keyboard)"
+  },
+  "145": {
+   "name": "AT",
+   "label": "(NEC PC98)"
+  },
+  "146": {
+   "name": "COLON",
+   "label": "(NEC PC98)"
+  },
+  "147": {
+   "name": "UNDERLINE",
+   "label": "(NEC PC98)"
+  },
+  "148": {
+   "name": "KANJI",
+   "label": "(Japanese keyboard)"
+  },
+  "149": {
+   "name": "STOP",
+   "label": "(NEC PC98)"
+  },
+  "150": {
+   "name": "AX",
+   "label": "(Japan AX)"
+  },
+  "151": {
+   "name": "UNLABELED",
+   "label": "(J3100)"
+  },
+  "153": {
+   "name": "NEXTTRACK",
+   "label": "Next Track"
+  },
+  "156": {
+   "name": "NUMPADENTER",
+   "label": "Enter on numeric keypad"
+  },
+  "157": {
+   "name": "RCONTROL",
+   "label": ""
+  },
+  "160": {
+   "name": "MUTE",
+   "label": "Mute"
+  },
+  "161": {
+   "name": "CALCULATOR",
+   "label": "Calculator"
+  },
+  "162": {
+   "name": "PLAYPAUSE",
+   "label": "Play / Pause"
+  },
+  "164": {
+   "name": "MEDIASTOP",
+   "label": "Media Stop"
+  },
+  "174": {
+   "name": "VOLUMEDOWN",
+   "label": "Volume -"
+  },
+  "176": {
+   "name": "VOLUMEUP",
+   "label": "Volume +"
+  },
+  "178": {
+   "name": "WEBHOME",
+   "label": "Web home"
+  },
+  "179": {
+   "name": "NUMPADCOMMA",
+   "label": ", on numeric keypad (NEC PC98)"
+  },
+  "181": {
+   "name": "DIVIDE",
+   "label": "/ on numeric keypad"
+  },
+  "183": {
+   "name": "SYSRQ",
+   "label": ""
+  },
+  "184": {
+   "name": "RMENU",
+   "label": "right Alt"
+  },
+  "197": {
+   "name": "PAUSE",
+   "label": "Pause"
+  },
+  "199": {
+   "name": "HOME",
+   "label": "Home on arrow keypad"
+  },
+  "200": {
+   "name": "UP",
+   "label": "UpArrow on arrow keypad"
+  },
+  "201": {
+   "name": "PRIOR",
+   "label": "PgUp on arrow keypad"
+  },
+  "203": {
+   "name": "LEFT",
+   "label": "LeftArrow on arrow keypad"
+  },
+  "205": {
+   "name": "RIGHT",
+   "label": "RightArrow on arrow keypad"
+  },
+  "207": {
+   "name": "END",
+   "label": "End on arrow keypad"
+  },
+  "208": {
+   "name": "DOWN",
+   "label": "DownArrow on arrow keypad"
+  },
+  "209": {
+   "name": "NEXT",
+   "label": "PgDn on arrow keypad"
+  },
+  "210": {
+   "name": "INSERT",
+   "label": "Insert on arrow keypad"
+  },
+  "211": {
+   "name": "DELETE",
+   "label": "Delete on arrow keypad"
+  },
+  "219": {
+   "name": "LWIN",
+   "label": "Left Windows key"
+  },
+  "220": {
+   "name": "RWIN",
+   "label": "Right Windows key"
+  },
+  "221": {
+   "name": "APPS",
+   "label": "AppMenu key"
+  },
+  "222": {
+   "name": "POWER",
+   "label": "System Power"
+  },
+  "223": {
+   "name": "SLEEP",
+   "label": "System Sleep"
+  },
+  "227": {
+   "name": "WAKE",
+   "label": "System Wake"
+  },
+  "229": {
+   "name": "WEBSEARCH",
+   "label": "Web Search"
+  },
+  "230": {
+   "name": "WEBFAVORITES",
+   "label": "Web Favorites"
+  },
+  "231": {
+   "name": "WEBREFRESH",
+   "label": "Web Refresh"
+  },
+  "232": {
+   "name": "WEBSTOP",
+   "label": "Web Stop"
+  },
+  "233": {
+   "name": "WEBFORWARD",
+   "label": "Web Forward"
+  },
+  "234": {
+   "name": "WEBBACK",
+   "label": "Web Back"
+  },
+  "235": {
+   "name": "MYCOMPUTER",
+   "label": "My Computer"
+  },
+  "236": {
+   "name": "MAIL",
+   "label": "Mail"
+  },
+  "237": {
+   "name": "MEDIASELECT",
+   "label": "Media Select"
+  }
+ }
+}

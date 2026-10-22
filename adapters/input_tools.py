@@ -72,6 +72,112 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
             return None
         return ToolResult.fail(why, {"headless": True})
 
+    def _maybe_focus(args: dict) -> None:
+        """按 auto_focus 先把游戏窗口切到前台。
+
+        为什么需要它：DLL 侧**只给 input_click 实现了 auto_focus**，而
+        input_drag / input_key 的 schema 里也声明了这个参数 —— 声明了却不实现，
+        传进来会被静默忽略。而"用户在看 Agent 输出"时前台正是浏览器，不先聚焦
+        就会被前台校验直接拒掉（实测："前台窗口不属于游戏进程"）。
+
+        靠调用方自己先 focus 再注入也不可靠：两者之间隔着一次工具往返，焦点随时
+        可能被抢回去（实测：focus_game 刚报"原本就是前台"，下一次调用就被拒）。
+        """
+        if args.get("auto_focus"):
+            chan.send({"cmd": "focus_game", "args": []}, timeout_s=8.0)
+
+    # ------------------------------------------------------------ 操作序列
+
+    # 与 DLL 侧一致。两边都校验是刻意的：MCP 侧能给出更友好的错误信息，
+    # 而 DLL 侧是最后一道（它不能假设调用方都守规矩）。
+    _MACRO_OPS = ("move", "click", "dblclick", "down", "up",
+                  "drag", "key", "combo", "sleep")
+    _MACRO_MAX = 200
+
+    @reg.tool(
+        name="input_macro",
+        description=(
+            "**一次调用执行一串输入操作**（鼠标宏）。用于需要精确时序的组合："
+            "双击、按住修饰键再拖拽、拖放。这些用多次独立调用做不到 —— 调用之间"
+            "隔着网络往返（约 100 ms），而且前台随时可能被抢走；DLL 侧是同一线程"
+            "顺序执行，间隔只有毫秒级，焦点也只在开头检查一次。\n\n"
+            'steps 是操作序列，每项形如 {"t":"click","x":100,"y":200}。\n'
+            '鼠标 button 一律 0=左 1=右 2=中。可用类型：\n'
+            '  · move     {x, y}                             移动指针\n'
+            '  · click    {x, y, button?, hold_ms?}          单击\n'
+            '  · dblclick {x, y, button?, gap_ms?}           双击（间隔可控，默认 120ms）\n'
+            '  · down/up  {x?, y?, button?}                  按住/松开鼠标键（可分开控制）\n'
+            '  · drag     {x1,y1,x2,y2, button?, steps?}     拖拽（三键都可）\n'
+            '  · key      {scan, down, hold_ms?}             键盘（scan 是 DIK 码）\n'
+            '  · combo    {keys:[scan,...], scan?, hold_ms?} 组合键：按住 keys，'
+            '按一次 scan，再**反向**松开\n'
+            '  · sleep    {ms}                               等待\n\n'
+            "失败即停，错误会指明**是第几步、哪个操作**失败。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "steps": {
+                    "type": "array",
+                    "description": "操作序列（最多 200 步）",
+                    "items": {"type": "object"},
+                },
+                "auto_focus": {"type": "boolean",
+                               "description": "整串操作前先聚焦一次（默认 false）"},
+            },
+            "required": ["steps"],
+        },
+        phase="input",
+    )
+    def _macro(args: dict) -> ToolResult:
+        gate_err = _require_inject()
+        if gate_err is not None:
+            return gate_err
+        ui_err = _require_ui()
+        if ui_err is not None:
+            return ui_err
+
+        steps = args.get("steps")
+        if not isinstance(steps, list) or not steps:
+            return ToolResult.fail("steps 必须是非空数组")
+        if len(steps) > _MACRO_MAX:
+            return ToolResult.fail(
+                "一次最多 %d 步（收到 %d 步）。拆成多次调用即可 —— "
+                "但要注意：拆开之后，两段之间的间隔是网络往返量级（约 100 ms），"
+                "需要紧密时序的操作不要跨调用拆。"
+                % (_MACRO_MAX, len(steps)))
+
+        # 逐项校验：错误信息能指到具体第几步，比让 DLL 返回更清楚
+        for i, st in enumerate(steps, 1):
+            if not isinstance(st, dict):
+                return ToolResult.fail("第 %d 步不是对象" % i)
+            op = st.get("t")
+            if not op:
+                return ToolResult.fail("第 %d 步缺少 t（操作类型）" % i)
+            if op not in _MACRO_OPS:
+                return ToolResult.fail(
+                    "第 %d 步的操作类型未知：%r（可用：%s）"
+                    % (i, op, "、".join(_MACRO_OPS)))
+
+        _maybe_focus(args)
+        # 超时按步数估算：sleep 是显式等待，必须算进去；其余每步几百毫秒足够。
+        waits = sum(int(st.get("ms") or 0) for st in steps
+                    if st.get("t") == "sleep")
+        budget = max(15.0, waits / 1000.0 + len(steps) * 0.5 + 10.0)
+        reply = chan.send({"cmd": "input_macro", "args": [steps]},
+                          timeout_s=budget)
+        audit("input_macro", {"steps": len(steps), "ok": reply.ok})
+        if not reply.ok:
+            return ToolResult.fail("操作序列执行失败：%s" % reply.error)
+        data = reply.result if isinstance(reply.result, dict) else {}
+        if not data.get("ok"):
+            return ToolResult.fail("操作序列被拒绝：%s"
+                                   % (data.get("error") or "未知原因"))
+        return ToolResult.ok(
+            "操作序列完成（%d 步）。\n"
+            "注意：这只表示注入成功，**不保证游戏按预期响应** —— "
+            "需要视觉确认时用 screenshot 核对。"
+            % data.get("steps", len(steps)), data)
+
     # ------------------------------------------------------------ 窗口信息
 
     @reg.tool(
@@ -204,6 +310,7 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         ui_err = _require_ui()
         if ui_err is not None:
             return ui_err
+        _maybe_focus(args)
         reply = chan.send({
             "cmd": "input_drag",
             "args": [args["x1"], args["y1"], args["x2"], args["y2"],
@@ -223,9 +330,11 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         name="input_key",
         description=("按键：scan 是 **DIK 扫描码**（不是虚拟键码，游戏普遍按扫描码读"
                      "键盘）。down=true 按下、false 抬起；给 hold_ms 则自动按下后"
-                     "等待再抬起。常用码：W=17 A=30 S=31 D=32 空格=57 ESC=1 "
-                     "Enter=28 Tab=15。也可先用 exec 的 actionKeys 反查某个功能"
-                     "绑定了哪些键。"),
+                     "等待再抬起。**完整表见 docs/dik.md**（从 Windows SDK 的 "
+                     "dinput.h 提取，不是手写的）。常用：ESC=1 Tab=15 Enter=28 "
+                     "空格=57 LSHIFT=42 LCONTROL=29 LMENU(Alt)=56 W=17 A=30 "
+                     "S=31 D=32；数字键盘 NUMPAD4=75 NUMPAD6=77 NUMPAD8=72 "
+                     "NUMPAD2=80。"),
         input_schema={
             "type": "object",
             "properties": {
@@ -246,6 +355,7 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         ui_err = _require_ui()
         if ui_err is not None:
             return ui_err
+        _maybe_focus(args)
         reply = chan.send({
             "cmd": "input_key",
             "args": [args["scan"], 1 if args["down"] else 0,

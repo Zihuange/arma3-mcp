@@ -538,7 +538,9 @@ std::string capture_window(const std::string &out_path, int max_width);
 std::string input_move(int x, int y);
 std::string input_click(int x, int y, int button, int hold_ms);
 std::string input_key(int scan, bool down, int hold_ms);
-std::string input_drag(int x1, int y1, int x2, int y2, int steps);
+std::string input_drag(int x1, int y1, int x2, int y2, int steps, int button);
+std::string input_mouse(int button, bool down, int x, int y);
+std::string input_macro(const JVal *steps);
 std::string make_status();
 std::string json_ok(const std::string &extra);
 std::string json_err(const std::string &message);
@@ -554,7 +556,8 @@ bool is_native_command(const std::string &name) {
     return name == "window_info" || name == "focus_game" ||
            name == "input_move"  || name == "input_click" ||
            name == "input_key"   || name == "input_drag" ||
-           name == "capture"     || name == "status";
+           name == "capture"     || name == "status" ||
+           name == "input_mouse" || name == "input_macro";
 }
 
 // 从 args 数组里取一个字符串参数
@@ -606,7 +609,15 @@ std::string run_native(const std::string &name, const JVal *args) {
     if (name == "input_drag") {
         return input_drag(arg_int(args, 0, 0), arg_int(args, 1, 0),
                           arg_int(args, 2, 0), arg_int(args, 3, 0),
-                          arg_int(args, 4, 20));
+                          arg_int(args, 4, 20), arg_int(args, 5, 0));
+    }
+    if (name == "input_mouse") {
+        return input_mouse(arg_int(args, 0, 0), arg_int(args, 1, 0) != 0,
+                           arg_int(args, 2, -1), arg_int(args, 3, -1));
+    }
+    if (name == "input_macro") {
+        const JVal *steps = args ? args->item(0) : nullptr;
+        return input_macro(steps);
     }
     return json_err("未实现的直连命令：" + name);
 }
@@ -914,7 +925,42 @@ std::string input_key(int scan, bool down, int hold_ms) {
 // 拖拽：按下 -> 分步移动 -> 抬起。
 // 分步而不是瞬移：很多 UI 只在指针**移动过程**中更新拖拽状态，
 // 一次跳到终点会被当作"没有拖拽"。
-std::string input_drag(int x1, int y1, int x2, int y2, int steps) {
+// 鼠标键码 → 按下/抬起标志。0=左 1=右 2=中（与 input_click 的约定一致）。
+static void mouse_flags(int button, DWORD &down_flag, DWORD &up_flag) {
+    if (button == 1) {
+        down_flag = MOUSEEVENTF_RIGHTDOWN;  up_flag = MOUSEEVENTF_RIGHTUP;
+    } else if (button == 2) {
+        down_flag = MOUSEEVENTF_MIDDLEDOWN; up_flag = MOUSEEVENTF_MIDDLEUP;
+    } else {
+        down_flag = MOUSEEVENTF_LEFTDOWN;   up_flag = MOUSEEVENTF_LEFTUP;
+    }
+}
+
+// 按下或松开一个鼠标键（不移动指针，除非给了 x/y）。
+//
+// 为什么需要它：单击/拖拽都是"按下+松开"打包好的操作，而有些交互要求两者
+// **分开**——按住右键的同时做别的、或者精确控制按住时长。宏里的 down/up
+// 步骤就是靠它。
+std::string input_mouse(int button, bool down, int x, int y) {
+    std::string why;
+    if (!foreground_is_self(why)) return json_err(why);
+    if (x >= 0 && y >= 0) {
+        if (!SetCursorPos(x, y)) return json_err("SetCursorPos 失败");
+        Sleep(10);
+    }
+    DWORD df = 0, uf = 0;
+    mouse_flags(button, df, uf);
+    INPUT in = {};
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = down ? df : uf;
+    if (SendInput(1, &in, sizeof(INPUT)) != 1) {
+        return json_err("SendInput 失败（输入被系统拒绝？）");
+    }
+    return json_ok("\"button\":" + std::to_string(button) +
+                   ",\"down\":" + (down ? "true" : "false"));
+}
+
+std::string input_drag(int x1, int y1, int x2, int y2, int steps, int button) {
     std::string why;
     if (!foreground_is_self(why)) return json_err(why);
     if (steps < 1) steps = 1;
@@ -923,9 +969,12 @@ std::string input_drag(int x1, int y1, int x2, int y2, int steps) {
     INPUT in = {};
     in.type = INPUT_MOUSE;
 
+    DWORD down_flag = 0, up_flag = 0;
+    mouse_flags(button, down_flag, up_flag);
+
     SetCursorPos(x1, y1);
     Sleep(10);
-    in.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+    in.mi.dwFlags = down_flag;
     if (SendInput(1, &in, sizeof(INPUT)) != 1) return json_err("拖拽按下失败");
 
     for (int i = 1; i <= steps; ++i) {
@@ -935,7 +984,7 @@ std::string input_drag(int x1, int y1, int x2, int y2, int steps) {
         Sleep(15);
     }
 
-    in.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+    in.mi.dwFlags = up_flag;
     SendInput(1, &in, sizeof(INPUT));
     return json_ok("\"from\":[" + std::to_string(x1) + "," + std::to_string(y1)
                    + "],\"to\":[" + std::to_string(x2) + "," + std::to_string(y2)
@@ -981,6 +1030,142 @@ std::string window_info() {
         wr.left, wr.top, wr.right, wr.bottom,
         cr.right, cr.bottom,
         origin.x, origin.y, dpi, dpi / 96.0);
+    return std::string(buf);
+}
+
+
+// ------------------------------------------------------------------ 操作序列
+//
+// 在一次调用内顺序执行一串输入操作 —— 也就是"鼠标宏"。
+//
+// ## 为什么必须在 DLL 里做
+//
+// MCP 侧把多个操作组合起来也能跑，但每个操作之间要过一次网络往返（实测约
+// 100ms），而且**工具调用之间前台随时可能被抢走**。需要精确时序的组合操作
+// ——双击、按住修饰键再拖拽、拖放——在那个粒度下不可靠。实测踩过：想用
+// "Shift + 拖拽"旋转实体，因为两次调用之间隔得太久，编辑器的放置模式已经
+// 把这次拖拽吃成了"再放一个单位"。
+//
+// DLL 侧是同一个线程顺序执行，间隔只有毫秒级，且**焦点只在开头检查一次**。
+//
+// ## 输入格式
+//
+//   [{"t":"move","x":1,"y":2}, {"t":"click","x":1,"y":2}, ...]
+//
+// 支持的 t：move / click / drag / key / sleep
+//
+// ## 失败即停
+//
+// 某一步失败就停下并报告**是第几步、为什么** —— 否则中间某步失败会被后面
+// 成功的步骤淹没，调用方只看到"整体成功"，那正是这个项目一路在打击的
+// 静默失败。
+std::string input_macro(const JVal *steps) {
+    if (!steps || steps->kind != JVal::ARR) {
+        return json_err("steps 必须是数组");
+    }
+    const size_t total = steps->arr.size();
+    if (total == 0) return json_err("steps 为空");
+    if (total > 200) return json_err("steps 过多（上限 200）");
+
+    for (size_t i = 0; i < total; ++i) {
+        const JVal *st = steps->item(i);
+        const std::string where = "第 " + std::to_string(i + 1) + " 步";
+        if (!st || st->kind != JVal::OBJ) {
+            return json_err(where + "不是对象");
+        }
+        const JVal *tv = st->find("t");
+        const std::string op = tv ? tv->as_str() : "";
+        if (op.empty()) return json_err(where + "缺少 t（操作类型）");
+
+        // 取整参数：数字、布尔都接受，缺省给 def
+        struct Get {
+            const JVal *st;
+            int operator()(const char *k, int def) const {
+                const JVal *v = st->find(k);
+                if (!v) return def;
+                if (v->kind == JVal::NUM) return static_cast<int>(v->num);
+                if (v->kind == JVal::BOOL) return v->b ? 1 : 0;
+                return def;
+            }
+        } g = {st};
+
+        const auto failed = [](const std::string &x) {
+            return x.find("\"ok\":false") != std::string::npos;
+        };
+
+        std::string r;
+        if (op == "move") {
+            r = input_move(g("x", 0), g("y", 0));
+        } else if (op == "click") {
+            r = input_click(g("x", 0), g("y", 0), g("button", 0), g("hold_ms", 30));
+        } else if (op == "dblclick") {
+            // 双击：两次单击 + **可控间隔**。
+            // 为什么要有专门的类型：拆成两个 click 步骤时，间隔由宏的其余步骤
+            // 决定，容易超出系统双击时限；而间隔本身常常正是要调的东西。
+            const int gap = g("gap_ms", 120);
+            r = input_click(g("x", 0), g("y", 0), g("button", 0), g("hold_ms", 30));
+            if (!failed(r)) {
+                Sleep(static_cast<DWORD>(gap > 5000 ? 5000 : (gap < 1 ? 1 : gap)));
+                r = input_click(g("x", 0), g("y", 0), g("button", 0), g("hold_ms", 30));
+            }
+        } else if (op == "down" || op == "up") {
+            // 鼠标键的按下/松开分开做 —— 有些交互要求按住不放，或用它配出
+            // 单击之外的组合（例如按住右键再点左键）。
+            r = input_mouse(g("button", 0), op == "down",
+                            g("x", -1), g("y", -1));
+        } else if (op == "drag") {
+            r = input_drag(g("x1", 0), g("y1", 0), g("x2", 0), g("y2", 0),
+                           g("steps", 20), g("button", 0));
+        } else if (op == "key") {
+            r = input_key(g("scan", 0), g("down", 1) != 0, g("hold_ms", 0));
+        } else if (op == "combo") {
+            // 组合键：keys 里的键全部按住 → 按一次 scan（可选）→ **反向**松开。
+            //
+            // 反向松开是有意的：先按的键后松，避免中途出现"两个键都抬起"的空窗，
+            // 游戏就可能把那一段读成两次独立点击而不是一次组合。
+            const JVal *keys = st->find("keys");
+            if (!keys || keys->kind != JVal::ARR || keys->arr.empty()) {
+                return json_err(where + "的 combo 需要非空的 keys 数组");
+            }
+            std::vector<int> held;
+            for (size_t k = 0; k < keys->arr.size(); ++k) {
+                int scan = static_cast<int>(keys->item(k)->num);
+                std::string kr = input_key(scan, true, 0);
+                if (failed(kr)) {
+                    for (size_t j = held.size(); j > 0; --j) {
+                        input_key(held[j - 1], false, 0);   // 出错也要收拾干净
+                    }
+                    return json_err(where + "按住修饰键 " + std::to_string(scan)
+                                    + " 失败：" + kr);
+                }
+                held.push_back(scan);
+            }
+            const int mainScan = g("scan", 0);
+            if (mainScan > 0) {
+                r = input_key(mainScan, g("down", 1) != 0, g("hold_ms", 0));
+            }
+            for (size_t j = held.size(); j > 0; --j) {
+                std::string kr = input_key(held[j - 1], false, 0);
+                if (failed(kr) && r.empty()) r = kr;
+            }
+            if (r.empty()) r = std::string("{\"ok\":true}");
+        } else if (op == "sleep") {
+            int ms = g("ms", 0);
+            if (ms > 0) Sleep(static_cast<DWORD>(ms > 10000 ? 10000 : ms));
+            r = std::string();
+        } else {
+            return json_err(where + "的操作类型未知：" + op);
+        }
+
+        // 子操作失败就停在这里
+        if (r.find("\"ok\":false") != std::string::npos) {
+            return json_err(where + "（" + op + "）失败：" + r);
+        }
+    }
+
+    char buf[128];
+    std::snprintf(buf, sizeof(buf),
+                  "{\"ok\":true,\"steps\":%zu}", total);
     return std::string(buf);
 }
 
@@ -1225,8 +1410,14 @@ std::string handle_call(const std::string &fn,
     }
     if (fn.rfind("input_drag", 0) == 0) {
         std::vector<int> v = tail_ints(fn.substr(10));
-        if (v.size() < 4) return json_err("input_drag 需要 x1 y1 x2 y2 [steps]");
-        return input_drag(v[0], v[1], v[2], v[3], v.size() > 4 ? v[4] : 20);
+        if (v.size() < 4) {
+            return json_err("input_drag 需要 x1 y1 x2 y2 [steps] [button]");
+        }
+        // ⚠ DLL 有**两条入口**：MCP 直连（run_native，走 JSON）与 SQF 转发
+        // （这里，走 "cmd arg arg …" 字符串）。改签名时两处都要同步 —— 这次
+        // 就漏了这一处，编译才报出来。
+        return input_drag(v[0], v[1], v[2], v[3], v.size() > 4 ? v[4] : 20,
+                          v.size() > 5 ? v[5] : 0);
     }
     if (fn.rfind("capture ", 0) == 0) {
         // 路径可能含空格，但 max_width 一定是末尾的纯数字，据此从右往左切
