@@ -289,7 +289,19 @@ class TcpChannel(Channel):
                 try:
                     msg = json.loads(raw.decode("utf-8"))
                 except (UnicodeDecodeError, json.JSONDecodeError):
+                    # 不是 JSON，但**不能丢**：SQF 侧在引擎最早期（-init= 阶段）
+                    # 往往只能送出纯文本——那时连构造 JSON 所需的字符串字面量
+                    # 都写不出来，引号会被参数链吃掉（见 decisions.md D19）。
+                    # 静默丢弃会让"探针没执行"与"探针执行了但没人看"无法区分，
+                    # 而这两种情况的处置完全相反。
+                    #
+                    # 同时给出 repr：实测有一次回执**看起来**是合法 JSON、却仍然
+                    # 解析失败（含中文的那几条），肉眼分不清差别，只有原始字节
+                    # 能说明问题——不可见字符、编码、前后缀都会在这里现形。
                     self.stats["errors"] += 1
+                    conn.push_event("[非 JSON 上行] raw=%r text=%s"
+                                    % (raw[:300],
+                                       raw.decode("utf-8", "replace")[:300]))
                     continue
                 conn.last_recv_at = time.time()
                 self._handle(conn, msg)

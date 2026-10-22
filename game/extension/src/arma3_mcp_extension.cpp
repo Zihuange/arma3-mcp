@@ -615,12 +615,23 @@ void handle_server_line(const std::string &line) {
     // MCP 下发：{"t":"cmd","cid":"...","cmd":"...","args":[...]}
     if (line.empty()) return;
 
-    // 先看是否 DLL 能自己处理（输入/截图/窗口），避免绕 SQF
+    // 先看是否 DLL 能自己处理（输入/截图/窗口/状态），避免绕 SQF
     JVal msg;
     if (msg.kind == JVal::NUL && JsonParser(line).parse(msg) &&
         msg.kind == JVal::OBJ) {
         const JVal *t = msg.find("t");
         const JVal *c = msg.find("cmd");
+
+        // ⚠ 协议层消息（hello_ack 等）**不是发给 SQF 的命令**，必须在这里
+        // 拦住。曾经漏了这一步：t != "cmd" 的消息会掉进下面的入队，于是
+        // 执行器每次连接都会取到一条 hello_ack，报"未知的命令类型"，再回一条
+        // cid 为空的失败回执——空 cid 的 ack 还会污染 MCP 侧的回执配对。
+        // 这是每次连接都必然发生的纯噪声，且症状（莫名其妙的一条错误回执）
+        // 离原因很远，所以在此显式记录理由，避免以后又被"简化"掉。
+        if (t && t->as_str() != "cmd") {
+            return;
+        }
+
         if (t && t->as_str() == "cmd" && c && is_native_command(c->as_str())) {
             const JVal *cid_v = msg.find("cid");
             std::string cid = cid_v ? cid_v->as_str() : "";
@@ -636,7 +647,9 @@ void handle_server_line(const std::string &line) {
         }
     }
 
-    // 其余命令仍交给 SQF 执行（表达式、config 查询等需要游戏世界）
+    // 其余命令仍交给 SQF 执行（表达式、config 查询等需要游戏世界）。
+    // 解析失败的行也走这里：宁可让 SQF 报"未知的命令类型"，也不要静默吞掉
+    // ——诊断信息比干净更重要。
     g_inq.push(line);
     g_rx_lines.fetch_add(1);
     write_diag(line);

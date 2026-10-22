@@ -412,3 +412,184 @@ WSL 直连**立刻成功**，且 **Node 的 fetch（undici，即 DSH 的处境�
 **检查**：`-init=` 的实际取值是从 `start_game.bat` **展开**出来后送去静态检查的
 （而不是检查一份手写副本），确保"检查的就是要部署的那一行"：
 SQFLint 无 error/warning，`sqfapi.py check-file` 未发现未知命令名。
+
+---
+
+## D20 实测结论：主菜单阶段拿不到模组 CfgFunctions（-init= 路线到此为止）
+
+D19 决定用 `-init=` 在主菜单拉起执行器，并用同步探针把答案取回来。实测结果
+（`game_events` 读到，经 DLL 的 `push` 通道送回）：
+
+| 探针 | 结果 | 含义 |
+|---|---|---|
+| P1 | **出现** | `-init=` 的同步部分确实执行了，push 通道可用 |
+| P2N | **出现** | **`a3mcp_fnc_init` 在主菜单阶段不存在** |
+| P3 | 未出现 | 走了 P2N 分支，没有可调用的函数 |
+| P4 | **未出现** | `spawn` 的代码块确实不会在这里被执行 |
+
+RPT 时间线印证：`CallExtension loaded: arma3_mcp`（15:04:24）就在 `-init=` 执行
+的那一刻，而引擎此时仍在加载动画资源，**调度器尚未运行**。
+
+**结论（硬事实，不再是猜测）**：
+
+1. **主菜单下模组的 CfgFunctions 没有编译**，`a3mcp_fnc_init` 之类的符号不存在。
+   所以"用 -init= 在主菜单启动 SQF 执行器"这条路**走不通**——不是写法问题，
+   而是引擎行为：CfgFunctions 的编译由 preInit/postInit 驱动，而那两个是
+   **任务作用域**的事件。
+2. `spawn` 在 `-init=` 阶段**静默失效**：不报错、不延迟执行，就是不发生。
+   任何依赖调度器（`sleep`／`waitUntil`／异步代码块）的写法都不能放在这里。
+3. `-init=` 里**确实可用**的是：同步表达式与 `callExtension`——也就是 DLL 直连
+   能力（截图／输入／窗口）以及 `push` 上行通道。
+
+**探针保留**：`start_game.bat` 里的探针留在原地。它很便宜，而且将来若引擎或
+CBA 行为变化（或有人给模组补上 preStart 机制），启动时立刻就能看出来，
+不必再猜一次。
+
+**下一步方向**：执行器只在任务加载后可用，而"进入任务"这一步本身可以用**已经
+可用的 DLL 直连输入注入**来完成——不必再跟 `-init=` 较劲。
+
+---
+
+## D21 执行器首次真机跑通后暴露的两个 bug
+
+进编辑器（用输入注入点进去的，见 D20 的后续）让执行器第一次真正跑起来，
+于是两个**一直存在、但在执行器不跑时永远看不见**的 bug 立刻现形。
+
+### 1. 表达式校验的收尾分支漏了白名单守卫（功能级，影响最大）
+
+`fn_validate.sqf` 里，循环内那条检查有 `(count _wl) > 0` 守卫：
+
+```sqf
+if ((count _wl) > 0 && { !(_low in _wl) }) then { ... }
+```
+
+而循环后的**收尾分支**（处理"表达式以标识符结尾"的情况）漏了同一个守卫：
+
+```sqf
+if ((!((_low select [0, 2]) == "_p")) && { !(_low in _wl) }) then { ... }   // 旧
+```
+
+MCP 侧不传白名单（`exec` 的 args 只有 `[expr, args]`），所以 `_wl` 是空数组，
+`_low in []` 恒为 false、`!false` 恒为 true —— **任何以词字符结尾的表达式都被
+误判成"标识符不在白名单内"**。
+
+破坏面比看起来大：词法切分把数字也算作词的一部分（这是为了 `_p0` 不被切成
+`_p`，见该文件注释），于是 `(allUnits) select 0` 末尾那个 `0` 会被当成
+"标识符 0"。实测两条表达式都倒在这里：
+
+| 表达式 | 实际报错 |
+|---|---|
+| `worldName` | 标识符 worldName 不在白名单内 |
+| `(allUnits) select 0` | 标识符 0 不在白名单内 |
+
+**结论：动态表达式功能在该配置下几乎整体不可用。** 修复即补上守卫。
+
+### 2. 协议层消息被当成命令塞进了 SQF 队列
+
+`handle_server_line` 原先的逻辑是"不是直连命令就入队"，于是 MCP 的
+`hello_ack`（握手回复）也进了队列。表现：
+
+```
+[A3MCP] cmd <- {"t":"hello_ack",...}
+[A3MCP] ack -> cid= ok=false          ← cid 为空
+```
+
+每次连接必然发生一次：浪费一轮执行、产出一条 cid 为空的失败回执，而空 cid
+的 ack 还会去撞 MCP 侧的回执配对。症状离原因很远，所以修复处留了注释说明
+它为什么必须留着。
+
+顺带解释了此前反复出现的 `inbox=1`／`inbox=2`——那两条"神秘命令"就是
+`hello_ack`，每次连接一条。
+
+两条修复都已加回归断言：DLL 侧用 `dll_smoke.py`（"protocol message not
+queued"，第二次 poll 必须为空），SQF 侧靠实际执行验证。
+
+---
+
+## D22 exec 全链路真机闭环；config 查询路径另行卡住
+
+修完 D21 的两个 bug、并同步了 `_x64` 副本（此前引擎一直加载着旧 DLL）之后，
+重新走了一遍：主菜单 → 点"编辑器" → Enter → 进编辑器。
+
+**结果**：
+
+| 检查项 | 结果 |
+|---|---|
+| 执行器启动 | ✅ `[A3MCP] 执行器已启动（poll 周期 0.1s）` |
+| `hello_ack` 噪音 | ✅ 消失（此前每次连接必现；`inbox` 也首次稳定为 0） |
+| `exec` 表达式校验 | ✅ `worldName` 不再被误拒 |
+| **`exec` 全链路** | ✅ **`已执行（cid=…，100 ms）结果：{"v":"Stratis","t":"text"}`** |
+| 回执解析 | ✅ 正常（此前那次"看起来是合法 JSON 却解析失败"未复现） |
+
+**至此 P1 主线（MCP → DLL → SQF → 引擎 → 回执 → MCP）在真机上完整走通。**
+
+**但 `configQuery` 是另一条路，它卡住了**：游戏侧日志显示命令已收到
+（15:57:28 `cmd <- …configQuery…`），此后**既没有 ack、也没有错误**，
+`已执行` 计数也没有增加。也就是说它既没走通、也没抛到能被 catch 的地方 ——
+与 `exec` 那条路（有 `ack ->` + `push ->` 日志）形成鲜明对比。
+
+这条路径**尚未排查**，属于已知未完成的独立问题。
+
+---
+
+## D23 config 查询卡住：两层 bug，都只在真机显形
+
+D22 记下"configQuery 收到命令后毫无反应"。排查发现是**两层**独立缺陷叠在一起，
+而两层的失败模式完全一样（没有 ack、没有 `[ERR]`、计数器不动），所以第一次
+看到时误以为是"configClasses 太慢"。
+
+### 第一层：MCP 侧参数位置错位
+
+`config_tools.py` 构造 args 时写的是"有 keys 才 append(keys)，有 limit 才
+append(limit)"，而 SQF 侧按**固定位置**读 `[root, 路径, op, keys, limit]`。
+keys 为空、limit 有值时 args 只有四个元素，limit 落进了 keys 的位置；
+`param [3, [], [[]]]` 期望数组却收到数字，直接抛异常。
+
+修：无条件占满五个位置。
+
+### 第二层：SQF 侧 configClasses 少传 condition
+
+修完第一层后 args 正确到达（`["CfgVehicles","","tree",[],8]`），但查询依旧失败。
+RPT 给出：
+
+```
+Error configclasses: 类型 Config entry，预期为 数组
+File a3mcp\fnc\fn_configQuery.sqf..., line 47
+```
+
+line 47 是 `} forEach (configClasses _cfg);`。查离线命令库，签名是**双参数**：
+
+```
+condition configClasses config   (condition: String, config: Config) -> Array
+```
+
+少传 condition，第一个位置收到 config，类型不符。两处（tree / search）都补上
+`"true"`。
+
+### 教训：被 catch 吞掉的异常会伪装成"慢"
+
+fn_loop 用 try/catch 包住每条命令，这是对的（一条坏命令不该杀死循环）。但
+catch 里只 diag_log 了 `[A3MCP][ERR]`——而这两层缺陷都发生在**能被引擎报错但
+不一定进到 catch** 的路径上，于是外部观察到的现象是"命令收到了、然后什么都没
+发生"。**下次遇到"无响应"，先翻 RPT 的 SQF 错误堆栈**，不要先假设是性能问题：
+两者在客户端看起来一模一样。
+
+另外值得记的是测试为什么没抓到第一层：假游戏端的 handler 对 keys 做了
+`isinstance(..., list)` 容错，而真端会抛异常——**假端比真端宽容，恰好掩盖了
+真端会炸的东西**。已补一个直接断言负载形状的测试类。
+
+**D23 后续：修复后的实测结果（2026-09-25）**
+
+两层修完、PBO 重新部署后，config 查询全线通过：
+
+| 工具 | 结果 |
+|---|---|
+| `config_tree(CfgVehicles)` | ✅ 返回子类列表，**共 8568 项** |
+| `config_class(CfgVehicles, [B_MRAP_01_F])` | ✅ 父类 + 继承链 + 17 项属性，并如实列出不存在的属性 |
+| `config_search(CfgVehicles, "B_MRAP*")` | ✅ 匹配 3 项（遍历基数 8568） |
+| `config_value(…, displayName/armor/maxSpeed)` | ✅ 三个值都正确 |
+| `exec("worldName")` | ✅ 回归通过（101 ms，返回 "Stratis"） |
+
+**顺带回答了 `onmachine.md` 里挂了很久的那个性能疑问**：`configClasses` 对
+`CfgVehicles` 这样的大子树（8568 个子类）遍历一次**能在 MCP 的 5 秒超时内完成**，
+所以"DLL 侧一次遍历、结果给 MCP 缓存"的设计成立，暂不需要改成分页。

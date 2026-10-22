@@ -138,6 +138,12 @@ def accept_once():
             "no ack here, as expected" if ack2 is None
             else "unexpected ack before any SQF poll")
 
+        # (4c) A protocol reply is NOT a command. If it were queued, the executor
+        # would pick it up, report "unknown command type", and answer with a
+        # cid-less ack that pollutes reply matching -- on every single connect.
+        c.send({"t": "hello_ack", "ver": 1, "server": "arma3-mcp"})
+        time.sleep(0.3)
+
         cmds_sent.set()
         time.sleep(2.0)
         conn.close()
@@ -194,6 +200,16 @@ results["queued exec retrievable via poll"] = (
     "exec" in polled,
     polled[:80] if polled else "poll returned nothing")
 
+# A second poll must come back empty: the hello_ack sent above must not
+# have been queued. This is the regression guard for that bug.
+out2 = ctypes.create_string_buffer(4096)
+lib.RVExtensionArgs(out2, 4096, b"poll", None, 0)
+leftover = out2.value.decode("utf-8", "replace")[:200]
+results["protocol message not queued"] = (
+    leftover.strip() == "",
+    "queue empty, as expected" if leftover.strip() == ""
+    else "hello_ack leaked into the queue: %s" % leftover[:80])
+
 # (5b) Polling must refresh the heartbeat -- otherwise a perfectly healthy
 # executor would keep looking dead and every diagnosis would be a false alarm.
 raw_after, after = ask_status()
@@ -213,7 +229,8 @@ print("checks:")
 all_ok = bool(got_hello)
 for label in ("status answered natively", "exec deferred to SQF",
               "queued exec retrievable via poll",
-              "heartbeat says never-polled", "poll refreshes heartbeat"):
+              "heartbeat says never-polled", "poll refreshes heartbeat",
+              "protocol message not queued"):
     passed, detail = results.get(label, (False, "not reached"))
     all_ok = all_ok and passed
     print("   [%s] %-38s %s" % ("PASS" if passed else "FAIL", label, detail))

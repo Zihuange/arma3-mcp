@@ -350,3 +350,39 @@ class TestNoChannel(ConfigToolCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestPayloadShape(ConfigToolCase):
+    """断言**发出去的负载形状**，不依赖假游戏端的宽容度。
+
+    为什么单列一个类：假游戏端的 handler 对 keys 做了 `isinstance(..., list)`
+    容错，于是"limit 落进 keys 位置"这种错误在契约测试里完全看不见 ——
+    而真游戏侧会因此抛 param 类型异常、被 fn_loop 的 catch 吞掉，表现为
+    "命令收到了但毫无反应"。所以这里直接盯住线上负载本身。
+    """
+
+    def _last_config_query(self, game) -> dict:  # noqa: ANN001
+        cmds = [c for c in game.commands if c.get("cmd") == "configQuery"]
+        self.assertTrue(cmds, "没有发出 configQuery 命令")
+        return cmds[-1]
+
+    def test_args_keep_positional_alignment_without_keys(self):
+        """不给 keys 时（config_tree(root=…) 的典型调用），位置仍须对齐。"""
+        game = self.connect_game()
+        self.wait_tool("config_tree", {"root": "CfgVehicles"})
+        args = self._last_config_query(game)["args"]
+
+        self.assertEqual(len(args), 5, "args 必须占满 [root, path, op, keys, limit]")
+        self.assertIsInstance(args[3], list, "keys 位置必须收到数组，不能是 limit")
+        self.assertIsInstance(args[4], int, "limit 位置必须收到数字")
+
+    def test_args_keep_positional_alignment_with_keys(self):
+        game = self.connect_game()
+        self.wait_tool("config_value", {"root": "CfgVehicles",
+                                        "path": ["B_MRAP_01_F"],
+                                        "keys": ["displayName"]})
+        args = self._last_config_query(game)["args"]
+
+        self.assertEqual(len(args), 5)
+        self.assertEqual(args[3], ["displayName"])
+        self.assertIsInstance(args[4], int)

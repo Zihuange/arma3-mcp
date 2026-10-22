@@ -135,30 +135,41 @@ game/mod/
 | `-init=`（启动参数） | 游戏启动时，主菜单阶段 | 加载 DLL；**尝试**拉起执行器 |
 | `preInit` / `postInit`（模组 CfgFunctions） | **任务加载时**才触发 | 启动执行器 |
 
-`start_game.bat` 的 `-init=` 现在做两件事：
+`start_game.bat` 的 `-init=` 做两件事：
 
 1. **加载 DLL**——截图／输入／窗口信息立刻可用，不需要任务；
-2. **尝试启动执行器**——`-init=` 跑得极早，模组函数可能还没编译好，
-   所以它会每秒重试、最多等 60 秒，并把结果写进 RPT。
+2. **发一组同步探针**，把"主菜单阶段到底有什么可用"问清楚，结果经
+   DLL 的 `push` 通道送回，用 MCP 的 `game_events` 读取：
 
-**判据**（在 RPT 里搜 `A3MCP`）：
-
-| 日志 | 含义 |
+| 探针 | 含义 |
 |---|---|
-| `A3MCP-BOOT` | `-init=` 里 spawn 的启动器确实跑了（没出现说明 `-init=` 本身没生效） |
-| `A3MCP-FN-OK` | 找到了 `a3mcp_fnc_init`，执行器开始启动 |
-| `A3MCP-NOFN` | 等满 60 秒也没找到——**主菜单下 CfgFunctions 未编译**，执行器只能在任务加载后启动 |
+| `P1` | `-init=` 的同步部分确实执行了（push 通道可用） |
+| `P2Y` / `P2N` | `a3mcp_fnc_init` 在这一刻**是否**定义 |
+| `P3` | `call` 返回（`fn_init` 跑完了） |
+| `P4` | spawn 的代码块是否被调度 |
 
-拿到 `FN-OK` 之后，用 `gates_status`／`game_link` 复核心跳是否"运行中"。
-只出现 `NOFN` 说明主菜单阶段拿不到模组函数；这**不是故障**，进任务后
-preInit/postInit 会照常把执行器拉起来（`fn_init` 有 `A3MCP_STARTED` 守卫，
-重复调用会被忽略）。
+**实测结论（2026-09-25，见 `decisions.md` D20）**：拿到的是 **P1 + P2N**。
+
+也就是说：
+
+- `-init=` 的同步代码能跑，`callExtension` 可用；
+- **模组的 CfgFunctions 在主菜单阶段没有编译**，`a3mcp_fnc_init` 不存在；
+- `spawn`（P4）**不执行**——`-init=` 跑在调度器起来之前，异步代码块在这里
+  静默失效，不报错也不延迟。
+
+所以：**主菜单下执行器起不来**，这不是配置问题，是引擎行为
+（CfgFunctions 由 preInit/postInit 驱动，而那两个是任务作用域的事件）。
+进任务后 preInit/postInit 会照常把执行器拉起来（`fn_init` 有 `A3MCP_STARTED`
+守卫，重复调用会被忽略）。
+
+这套探针**留在启动器里**：它很便宜，而且将来引擎或 CBA 行为若有变化，
+启动时立刻就能看出来。
 
 **为什么不写引号**：`-init=` 的字符串要经过 cmd.exe 与引擎两轮参数解析，
 里面出现的引号会被吃掉（实测 RPT 报 `Error: missing '`）。因此 `start_game.bat`
-里所有字符串（扩展名、函数名、日志标记）都用 `toString [字符码]` 构造，
+里所有字符串（扩展名、函数名、探针标记）都用 `toString [字符码]` 构造，
 字符码集中定义在文件里并逐条注释。改这段代码前先读
-[`decisions.md`](decisions.md) 的 D19。
+[`decisions.md`](decisions.md) 的 D19 与 D20。
 
 ---
 
@@ -208,8 +219,9 @@ preInit/postInit 会照常把执行器拉起来（`fn_init` 有 `A3MCP_STARTED` 
 
 1. **引擎侧的 config 查询行为**：`configClasses` 的分页语义、`configProperties`
    的 `inherit` 参数表现、以及"子类未定义而父类有"时该报什么，都待实测。
-2. **`configClasses` 的性能**：对 `CfgVehicles` 这类大子树调用一次的开销。
-   目前设计是"游戏侧一次遍历、结果给 MCP 缓存"，实测若太慢需改成按需分页。
+2. ~~**`configClasses` 的性能**~~ **已实测（2026-09-25）**：`CfgVehicles` 有
+   8568 个子类，完整遍历一次**能在 MCP 的 5 秒超时内返回**，故"游戏侧一次
+   遍历、结果给 MCP 缓存"的设计成立，暂不需改成分页。
 3. **compile 的实际开销与缓存收益**：编译缓存按表达式文本作键，收益未量化。
 4. **poll 周期 0.1s 的实际影响**：占游戏逻辑线程的时间未测，若偏高可调
    `a3mcp_fnc_init` 的参数。
@@ -218,3 +230,21 @@ preInit/postInit 会照常把执行器拉起来（`fn_init` 有 `A3MCP_STARTED` 
    poll 后立即刷新），但 `STALE_MS = 3000` 是按"SQF 轮询周期 0.1s、留 30 个周期
    余量"推出来的。实机上若加载卡顿、或某条命令执行很久，心跳会短暂超阈值，
    表现为**误报**"心跳停滞"——需实测后调整（见 `adapters/health.py`）。
+
+---
+
+## 附：把新构建拷进游戏目录时的坑
+
+即使游戏**已经关闭**，WSL 侧的 `cp` / `mv` 仍会对 `game/mod/*.dll` 与
+`game/mod/addons/*.pbo` 报 `Permission denied`。这不是文件真被锁：
+`attrib` 显示只有 archive 位，`tasklist` 里游戏进程也已退出。是 drvfs 层面的问题。
+
+用 **Windows 侧**的 copy 一次就成功：
+
+```bat
+copy /y <repo>\build\pbo_out\a3mcp.pbo <repo>\game\mod\addons\a3mcp.pbo
+copy /y <repo>\game\mod\arma3_mcp.dll <repo>\game\mod\arma3_mcp_x64.dll
+```
+
+拷完用 sha256 对比确认一致 —— `_x64` 那个副本最容易漏（引擎优先加载它，
+漏了就等于改动根本没生效），而 CMake 的后置复制在游戏运行时必然失败。

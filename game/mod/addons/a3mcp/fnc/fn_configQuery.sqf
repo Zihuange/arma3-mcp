@@ -32,6 +32,17 @@ if (!(isClass _cfg)) exitWith {
     [_cid, false, "config 路径不存在" + _root + "/" + _path] call _reply
 };
 
+// ⚠ configClasses 是**双参数**命令：`condition configClasses config`。
+//
+// 本文件曾写成 `configClasses _cfg`（少传 condition），引擎报
+// "configclasses: 类型 Config entry，预期为 数组" —— 第一个位置期望的是
+// condition 字符串，不是 config。而这个错误只在真机上出现，被 fn_loop 的
+// catch 吞掉后，外面看到的是"命令收到了但毫无反应"（没有 ack、没有 [ERR]），
+// 只有翻 RPT 的 SQF 错误堆栈才看得到。
+//
+// 两处统一给 "true"（不过滤，取全部子类），筛的工作留在 SQF 侧做，
+// 见 search 分支。命令签名以离线库为准：configClasses 的 condition 是
+// String、config 是 Config，返回 Array。
 switch (_op) do {
     case "tree": {
         private _children = [];
@@ -44,7 +55,7 @@ switch (_op) do {
                     ["isClass", true]
                 ];
             };
-        } forEach (configClasses _cfg);
+        } forEach ("true" configClasses _cfg);
         private _payload = createHashMapFromArray [
             ["children", _children], ["total", _total]
         ];
@@ -69,7 +80,7 @@ switch (_op) do {
             if (_prefix == "" || { (toLower _nm) find _prefix >= 0 }) then {
                 if (count _matches < _limit) then { _matches pushBack _nm; };
             };
-        } forEach (configClasses _cfg);
+        } forEach ("true" configClasses _cfg);
         private _payload = createHashMapFromArray [
             ["matches", _matches], ["total", _total]
         ];

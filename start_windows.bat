@@ -28,9 +28,27 @@ if not exist "%HERE%\serve_http.py" (
 )
 
 cd /d "%HERE%"
+
+rem Allow native input injection (synthetic mouse/keyboard into the game).
+rem
+rem Why it is on here: off is the upstream default, because a tool that can
+rem move the user's mouse is a real hazard. This launcher turns it on because
+rem driving the game *is* the point of this setup -- without it the agent can
+rem look (screenshot) but never act.
+rem
+rem The hazards that remain, and why they are acceptable:
+rem   * injection only fires while the game window is foreground
+rem     (ALC_INPUT_FOREGROUND_ONLY), so the pointer is never hijacked away;
+rem   * the DLL itself refuses to act on any window that does not belong to the
+rem     game process, so a mis-aimed coordinate cannot click another program.
+rem Remove this line (or set it to 0) to go back to look-but-don't-touch.
+set "ALC_INPUT_INJECT=1"
+
 echo Starting arma3-mcp HTTP transport on port %PORT% ...
 echo The line marked with a star is the url DSH needs.
 echo Press Ctrl+C to stop.
+echo.
+echo   input injection: %ALC_INPUT_INJECT%  (1 = the agent may drive the game)
 echo.
 "%PY%" "%HERE%\serve_http.py" --port %PORT%
 

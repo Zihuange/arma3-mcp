@@ -100,7 +100,18 @@ private _badReason = "";
 if (count _used > 0) then {
     private _tok = toString _used;
     private _low = toLower _tok;
-    if ((!((_low select [0, 2]) == "_p")) && { !(_low in _wl) }) then {
+    // ⚠ 这里必须和上面循环内一样带 `(count _wl) > 0` 守卫。
+    //
+    // 漏掉它时（本行曾经就是漏的），MCP 不传白名单（_wl 为空）的场景下
+    // `_low in []` 恒为 false、`!false` 恒为 true，于是**任何以词字符结尾的
+    // 表达式都会被误判为"标识符不在白名单内"**。
+    //
+    // 破坏面比看上去大得多：词法切分把数字也算作词的一部分（为了 _p0 不被
+    // 切成 _p），所以 `(allUnits) select 0` 末尾那个 0 会被当成标识符 0 而
+    // 报"标识符 0 不在白名单内"。实测中 worldName 与 (allUnits) select 0
+    // 两条都倒在这里，等于动态表达式功能整体不可用。
+    if ((!((_low select [0, 2]) == "_p")) && { (count _wl) > 0 }
+            && { !(_low in _wl) }) then {
         _bad = _tok;
         _badReason = format ["标识符 %1 不在白名单内", _tok];
     } else {

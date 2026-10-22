@@ -29,10 +29,14 @@ Python 标准库。这条约束由 `tools/check_independence.py` 作为可执行
 | `game_link`／`gates_status` | 只要 DLL 加载 | 同上；用来判断执行器到底在不在跑 |
 | `exec`／`exec_batch`／`config_*` | **SQF 执行器在运行** | 需要游戏世界；执行器目前只在**任务加载后**才启动 |
 
-主菜单下执行器不会运行（把启动提前到游戏启动的方案见 `docs/onmachine.md`，
-当前 `start_game.bat` 的 `-init=` 只用来加载 DLL）。此时 `exec` 不会执行，
-命令会堆在 DLL 队列里直到超时——`gates_status` 会直接把这一点说出来，
-`exec` 超时的错误里也会附上原因，不再让人对着"超时"猜。
+上面这一档划分不是猜的：**主菜单下执行器确实起不来**，已在实机上确认
+（`decisions.md` D20）。原因是模组的 CfgFunctions 在主菜单阶段**没有编译**，
+`a3mcp_fnc_init` 不存在；而 CfgFunctions 的编译由 preInit/postInit 驱动，
+那两个是**任务作用域**的事件。想用 `-init=` 抢跑也不行：那个时机跑在调度器
+起来之前，连 `spawn` 都不执行。
+
+此时 `exec` 不会执行，命令会堆在 DLL 队列里直到超时——`gates_status` 会把
+这一点直接说出来，`exec` 超时的错误里也会附上原因，不再让人对着"超时"猜。
 
 **P0 可独立使用**：Agent 能查证任意引擎命令的签名、校验参数、预演将要发送的
 内容；`exec` 在通道未接通时**明确报错**，不会假装执行成功。

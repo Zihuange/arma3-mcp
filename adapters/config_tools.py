@@ -133,11 +133,16 @@ class ConfigTools:
             if cached is not None:
                 return True, cached, ""
 
-        payload_args = [root, "/".join(path), op]
-        if keys:
-            payload_args.append(keys)
-        if limit:
-            payload_args.append(limit)
+        # ⚠ 参数按**位置**对齐：[root, 路径, op, keys, limit] —— 五个位置一个都不能少。
+        #
+        # 这里曾经写成"有 keys 才 append(keys)，有 limit 才 append(limit)"。
+        # 后果：keys 为空而 limit 有值时（`config_tree(root=...)` 正是如此），
+        # args 只有四个元素，limit 落进了 keys 的位置。SQF 侧
+        # `_args param [3, [], [[]]]` 期望数组却收到数字，param 的类型校验直接
+        # 抛异常；而异常被 fn_loop 的 catch 吞掉，于是外面看到的是
+        # **"命令收到了、然后什么也没发生"**——既没有 ack 也没有错误日志。
+        # 这类"位置错位"不会自己显形，只有从 RPT 的 SQF 错误堆栈才看得出来。
+        payload_args = [root, "/".join(path), op, keys or [], limit]
         # 走游戏侧的统一分发器；命令名与参数都在白名单/校验之内
         reply = self.chan.send({
             "cmd": "configQuery",
