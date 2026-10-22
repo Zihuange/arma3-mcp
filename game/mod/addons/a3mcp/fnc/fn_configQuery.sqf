@@ -28,6 +28,57 @@ private _cfg = configFile >> _root;
     if (_x != "") then { _cfg = _cfg >> _x; };
 } forEach (_path splitString "/");
 
+// ── 通配符匹配（`*` 任意串、`?` 单字符）──────────────────────────────
+//
+// ⚠ 这里曾经是"只取第一个 `*` 之前那一段、看它在类名里是否出现"，
+// 于是**模式以 `*` 开头时那一段为空 → 匹配全部类**（实测有人得到 15604 条
+// 无关结果）。而且 `?` 从未实现，含 `?` 的模式一律匹配不到（漏报）。
+// 旧写法既误报又漏报，两端都错。
+//
+// 现在是标准 glob：双指针 + 星号回溯。算法与 MCP 侧
+// `adapters/config_tools.py::glob_match` 必须一致（那边有测试参考实现），
+// 字符码 42='*'、63='?'。
+private _globMatch = {
+    params [["_pat", "", [""]], ["_name", "", [""]]];
+    private _p = toArray _pat;
+    private _n = toArray _name;
+    private _pl = count _p;
+    private _nl = count _n;
+    private _pi = 0;
+    private _ni = 0;
+    private _starP = -1;
+    private _starN = -1;
+    private _ok = true;
+
+    while { _ni < _nl } do {
+        private _pc = if (_pi < _pl) then { _p select _pi } else { -1 };
+        if (_pi < _pl && { _pc == 63 || { _pc == (_n select _ni) } }) then {
+            _pi = _pi + 1;
+            _ni = _ni + 1;
+        } else {
+            if (_pi < _pl && { _pc == 42 }) then {
+                _starP = _pi;
+                _starN = _ni;
+                _pi = _pi + 1;
+            } else {
+                if (_starP >= 0) then {
+                    _starN = _starN + 1;
+                    _ni = _starN;
+                    _pi = _starP + 1;
+                } else {
+                    _ok = false;
+                    _ni = _nl;      // 无法匹配：让主循环条件失败以跳出（SQF 没有 break）
+                };
+            };
+        };
+    };
+    if (_ok) then {
+        while { _pi < _pl && { (_p select _pi) == 42 } } do { _pi = _pi + 1; };
+        _ok = (_pi == _pl);
+    };
+    _ok
+};
+
 if (!(isClass _cfg)) exitWith {
     [_cid, false, "config 路径不存在" + _root + "/" + _path] call _reply
 };
@@ -69,15 +120,15 @@ switch (_op) do {
         // ⚠ configClasses 是重量级调用（遍历子树）。这里只做一次遍历，
         // 结果整体给 MCP 侧缓存；不要在游戏侧反复遍历匹配。
         private _pattern = toLower (_keys param [0, "", [""]]);
-        private _prefix = _pattern;
-        private _star = _pattern find "*";
-        if (_star >= 0) then { _prefix = _pattern select [0, _star]; };
         private _matches = [];
+        // `_total` 现在是"**精确命中**总数"，不再是"遍历到的子类数"——
+        // 旧实现把遍历数当总数报出去，配合错误的匹配规则，读起来像是
+        // "有 15604 个匹配"，实际那是整棵子树的规模。语义必须分开。
         private _total = 0;
         {
             private _nm = configName _x;
-            _total = _total + 1;
-            if (_prefix == "" || { (toLower _nm) find _prefix >= 0 }) then {
+            if ([_pattern, toLower _nm] call _globMatch) then {
+                _total = _total + 1;
                 if (count _matches < _limit) then { _matches pushBack _nm; };
             };
         } forEach ("true" configClasses _cfg);

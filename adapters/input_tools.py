@@ -21,7 +21,7 @@
 
 ## 闸门
 
-输入注入默认**关闭**（ALC_INPUT_INJECT=0）：它作用于系统输入队列，
+输入注入默认**关闭**（A3MCP_INPUT_INJECT=0）：它作用于系统输入队列，
 影响范围超出游戏本身。截图只读画面，不受该闸门限制。
 """
 
@@ -41,16 +41,16 @@ DEFAULT_SHOT_DIR = os.path.join(
 
 
 def _shot_dir() -> str:
-    return os.environ.get("ALC_SHOT_DIR") or DEFAULT_SHOT_DIR
+    return os.environ.get("A3MCP_SHOT_DIR") or DEFAULT_SHOT_DIR
 
 
 def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
     def _require_inject() -> ToolResult | None:
         if not gates.input_inject:
             return ToolResult.fail(
-                "输入注入未开启（ALC_INPUT_INJECT 未启用）。\n"
+                "输入注入未开启（A3MCP_INPUT_INJECT 未启用）。\n"
                 "这是刻意的默认值：注入作用于**系统输入队列**，影响范围超出游戏"
-                "本身。确认要在当前环境使用后，设置 ALC_INPUT_INJECT=1 并重启 "
+                "本身。确认要在当前环境使用后，设置 A3MCP_INPUT_INJECT=1 并重启 "
                 "MCP 服务。\n"
                 "（也可以先用输入无关的能力：单位动作可用 exec 的 action/playMove，"
                 "UI 控件可用 ctrlSetText/ctrlActivate。）")
@@ -410,7 +410,10 @@ def register(reg: Registry, chan: Channel, gates) -> None:  # noqa: ANN001
         name="screenshot",
         description=("截取游戏窗口画面并**直接返回图片**（你可以看到画面内容）。"
                      "默认缩放到 1280 宽以控制体积；画面很大时可调小 max_width。"
-                     "仅当前台窗口属于游戏进程时有效。"),
+                     "仅当前台窗口属于游戏进程时有效。"
+                     "⚠ 取的是**窗口合成表面**（PrintWindow），可能是上一帧或有伪影——"
+                     "**不要用它读精确坐标或判断瞬时状态**；那类需求用 worldToScreen / "
+                     "getPos 等引擎数据，或先 ui_locate 拿控件坐标。"),
         input_schema={
             "type": "object",
             "properties": {

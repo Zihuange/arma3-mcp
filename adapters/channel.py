@@ -106,7 +106,7 @@ def local_preview_command(payload: dict) -> dict:
 def channel_from_env(env: Optional[dict] = None) -> Channel:
     """按环境变量选通道。默认 NullChannel（P0 阶段）。"""
     e = env if env is not None else os.environ
-    explicit = (e.get("ALC_CHANNEL") or "").strip().lower()
+    explicit = (e.get("A3MCP_CHANNEL") or "").strip().lower()
     if explicit in ("", "null", "none"):
         return NullChannel()
     # P1 起：pipe / tcp 在此分派

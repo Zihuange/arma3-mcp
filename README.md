@@ -81,9 +81,9 @@ python3 -m servers.engine
     args: ['-m', 'servers.engine']
     cwd: <repo>
     env:
-      ALC_ENGINE_WRITE: '1'      # 改游戏世界
-      ALC_ENGINE_EXOTIC: '0'     # 生成资源/网络协调（默认关）
-      ALC_INPUT_INJECT: '0'      # 原生输入注入（默认关）
+      A3MCP_ENGINE_WRITE: '1'      # 改游戏世界
+      A3MCP_ENGINE_EXOTIC: '0'     # 生成资源/网络协调（默认关）
+      A3MCP_INPUT_INJECT: '0'      # 原生输入注入（默认关）
 ```
 
 工具名形如 `mcp__arma3_engine__cmd_info`。
@@ -165,7 +165,7 @@ python3 -m servers.engine
 | `exotic` | 凭空生成资源 / 网络协调 / 调试后门 | **拒绝** |
 | `forbidden` | 动态代码执行面（`execVM`/`compile`/`callExtension`/`remoteExec`…） | **永远拒绝** |
 
-硬禁命令**没有任何开关能放行**，包括显式白名单 `ALC_ALLOW_COMMANDS`——这是刻意
+硬禁命令**没有任何开关能放行**，包括显式白名单 `A3MCP_ALLOW_COMMANDS`——这是刻意
 的设计：MCP 工具的参数来自 LLM，一旦命令名可以来自任意字符串，全部类型校验与
 白名单都会退化为装饰。详见 [`docs/safety.md`](docs/safety.md)。
 

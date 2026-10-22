@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 
 FORBIDDEN_EXACT = {
     # 动态代码执行：放行即等于放弃参数校验
-    "compile", "compilefinal", "call", "spawn", "exec", "execvm", "execfsm",
+    "compile", "compilefinal", "spawn", "exec", "execvm", "execfsm",
     "preprocessfile", "preprocessfilelinenumbers", "preprocessconfigfile",
     "loadfile", "callExtension".lower(),
     # 远程执行：跨机注入面
@@ -38,6 +38,41 @@ FORBIDDEN_EXACT = {
     "bis_fnc_codeperformance", "bis_fnc_dbg_remotelyexec",
 }
 
+# `call` 不在硬禁里，但也不是普通命令——它是**有条件放行**的一级。
+#
+# 为什么它和 compile/spawn 不同（这是本轮唯一的判据变化）：
+#   compile / spawn / execVM 的参数是**任意字符串**，放行即等于放弃校验；
+#   而 `call` 的参数是**函数引用**——它只能取到有限的那些已编译符号，
+#   且这些符号的名字可以逐个核对（见下表的 CALL_DENY 与 function_list 白名单）。
+#   引擎定义支持这一点：`call code` 的 code 参数"also accepts datatype String"，
+#   传字符串时按**函数名**解析，不建新代码对象（BI 命令库原文）。
+#
+# 因此 `call` 走 A3MCP_ENGINE_CALL 闸门，且函数名要额外过 CALL_DENY。
+# 仍留在 FORBIDDEN_PREFIXES 里的 `bis_fnc_exec*` 说明：这条路不等于"能执行任意代码"。
+
+# 即使开了 call 闸门也**一律拒绝**的函数名。
+#
+# 两类：
+#   · 执行类——它们把字符串编译成代码，等于把 `call` 变回 `compile`；
+#   · 远程类——跨机注入面。
+# 优先级**高于**白名单：显式放行也解不开（见 Gates.check）。
+CALL_DENY_EXACT = {
+    "bis_fnc_execvm", "bis_fnc_execfsm", "bis_fnc_spawn",
+    "bis_fnc_codeperformance", "bis_fnc_dbg_remotelyexec",
+    "bis_fnc_mp", "bis_fnc_callsqf",
+    "call", "compile", "compilefinal", "spawn", "execvm", "execfsm",
+    "callextension", "remoteexec", "remoteexeccall",
+}
+CALL_DENY_PREFIXES = (
+    "bis_fnc_exec",        # execVM / execFSM / execRemote / execCode …
+    "bis_fnc_spawn",       # spawn / spawnGroup … 都是另起代码
+    "bis_fnc_dbg_",        # 调试后门
+    "bis_fnc_codeperformance",
+    "bis_fnc_callsqf",
+    "spawn_",              # 引擎内部的 spawn 变体
+    "exec_",
+)
+
 FORBIDDEN_PREFIXES = (
     "bis_fnc_exec",        # BIS_fnc_execVM / execFSM / execRemote …
     "bis_fnc_spawn",       # BIS_fnc_spawnGroup 等会绕过受控注册
@@ -45,7 +80,7 @@ FORBIDDEN_PREFIXES = (
     "bis_fnc_codeperformance",
 )
 
-# --------------------------------------------------------------- 需 EXOTIC 闸门
+# 需 EXOTIC 闸门
 
 # 凭空生成资源：这类命令让"战力"与"地图原状"解耦，属于沙盒能力
 EXOTIC_EXACT = {
@@ -87,6 +122,27 @@ def _norm(name: str) -> str:
     return (name or "").strip().lower()
 
 
+def call_denied(fn_name: str) -> Optional[str]:
+    """函数名是否属于"即使开了 call 闸门也一律拒绝"的一类。
+
+    返回命中的原因（供报错文本用），没命中返回 None。
+    """
+    f = _norm(fn_name).lstrip("_")
+    if not f:
+        return None
+    if f in CALL_DENY_EXACT:
+        return "执行类/远程类官方函数（会把 call 变回 compile）"
+    for prefix in CALL_DENY_PREFIXES:
+        if f.startswith(prefix):
+            return "执行类/远程类官方函数（前缀 %s*）" % prefix
+    return None
+
+
+def call_denied_list() -> list[str]:
+    """CALL_DENY 清单（供文档生成与自检）。"""
+    return sorted(CALL_DENY_EXACT) + [p + "*" for p in CALL_DENY_PREFIXES]
+
+
 @dataclass
 class Verdict:
     allowed: bool
@@ -104,12 +160,19 @@ class Verdict:
 
 
 def classify(name: str) -> str:
-    """给命令分级：read / write / exotic / forbidden。"""
+    """给命令分级：read / write / exotic / call_gated / forbidden。
+
+    `call` 单独一级是刻意的：它的风险不来自"命令本身危险"，而来自**它的参数**。
+    分级函数看不到参数，所以它只能回答"这类命令需要额外核对"，核对在
+    `Gates.check`（开关）与 `knowledge.expr.validate`（函数名）里各做一次。
+    """
     n = _norm(name)
     if not n:
         return "forbidden"
     if n in FORBIDDEN_EXACT or any(n.startswith(p) for p in FORBIDDEN_PREFIXES):
         return "forbidden"
+    if n == "call":
+        return "call_gated"
     if n in EXOTIC_EXACT or any(n.startswith(p) for p in EXOTIC_PREFIXES):
         return "exotic"
     if n in READ_EXCEPTIONS:
@@ -131,6 +194,7 @@ class Gates:
     engine_read: bool = True
     engine_write: bool = True
     engine_exotic: bool = False
+    engine_call: bool = False
     ui_control: bool = True
     input_inject: bool = False
     input_foreground_only: bool = True
@@ -148,33 +212,49 @@ class Gates:
                 return default
             return raw.strip().lower() in ("1", "true", "yes", "on")
 
-        extra = (e.get("ALC_ALLOW_COMMANDS") or "").strip()
+        extra = (e.get("A3MCP_ALLOW_COMMANDS") or "").strip()
+        profile = (e.get("A3MCP_PROFILE") or "").strip().lower()
+        # debug 档：只把偏"能力探索"的两项默认打开（EXOTIC 与 call）。
+        # 刻意不含 engine_write / input_inject —— 那两个改变了"会不会动到世界"
+        # 的性质，而 debug 的本意是"能查能调"，不是"放手改"。
+        debug = profile == "debug"
         return cls(
-            engine_read=flag("ALC_ENGINE_READ", True),
-            engine_write=flag("ALC_ENGINE_WRITE", True),
-            engine_exotic=flag("ALC_ENGINE_EXOTIC", False),
-            ui_control=flag("ALC_UI_CONTROL", True),
-            input_inject=flag("ALC_INPUT_INJECT", False),
-            input_foreground_only=flag("ALC_INPUT_FOREGROUND_ONLY", True),
-            allow_input_text=flag("ALC_INPUT_TEXT", True),
-            allow_cheat=flag("ALC_ALLOW_CHEAT", False),
+            engine_read=flag("A3MCP_ENGINE_READ", True),
+            engine_write=flag("A3MCP_ENGINE_WRITE", True),
+            engine_exotic=flag("A3MCP_ENGINE_EXOTIC", debug),
+            engine_call=flag("A3MCP_ENGINE_CALL", debug),
+            ui_control=flag("A3MCP_UI_CONTROL", True),
+            input_inject=flag("A3MCP_INPUT_INJECT", False),
+            input_foreground_only=flag("A3MCP_INPUT_FOREGROUND_ONLY", True),
+            allow_input_text=flag("A3MCP_INPUT_TEXT", True),
+            allow_cheat=flag("A3MCP_ALLOW_CHEAT", False),
             overrides={x.strip().lower() for x in extra.split(",") if x.strip()},
         )
 
     def check(self, name: str) -> Verdict:
         n = _norm(name)
         level = classify(n)
-        if n in self.overrides and level != "forbidden":
-            # 显式放行只对"非硬禁"有效——硬禁没有例外，这是刻意的
-            return Verdict(True, level, reason=f"{n} 由 ALC_ALLOW_COMMANDS 显式放行")
+        if n in self.overrides and level not in ("forbidden", "call_gated"):
+            # 显式放行只对"非硬禁"有效——硬禁没有例外，这是刻意的。
+            #
+            # call_gated 同样**不接受**显式放行，理由不同：它要核对的是"调用哪个
+            # 函数"，那份清单在 knowledge.expr 里逐条比对函数名。用一个命令名级别
+            # 的开关放行 call，等于绕开那次核对——那就是留后门。
+            return Verdict(True, level, reason=f"{n} 由 A3MCP_ALLOW_COMMANDS 显式放行")
         if level == "forbidden":
             return Verdict(
                 False, level,
                 reason=(f"{n} 属于**硬禁命令**（动态代码执行 / 注入面），"
                         f"没有任何开关能放行。请改用结构化调用表达同一意图。"))
+        if level == "call_gated" and not self.engine_call:
+            return Verdict(
+                False, level,
+                reason=("call 是有条件放行的一级：它的参数是函数引用，必须逐个核对"
+                        "函数名。当前未开 A3MCP_ENGINE_CALL。"),
+                needs_flag="A3MCP_ENGINE_CALL")
         if level == "exotic" and not self.engine_exotic:
-            need = "ALC_ALLOW_CHEAT" if n in CHEAT_COMMANDS else "ALC_ENGINE_EXOTIC"
-            if need == "ALC_ALLOW_CHEAT" and self.allow_cheat:
+            need = "A3MCP_ALLOW_CHEAT" if n in CHEAT_COMMANDS else "A3MCP_ENGINE_EXOTIC"
+            if need == "A3MCP_ALLOW_CHEAT" and self.allow_cheat:
                 return Verdict(True, level, reason=f"{n} 已由调试开关放行")
             return Verdict(
                 False, level,
@@ -185,10 +265,10 @@ class Gates:
             return Verdict(
                 False, level,
                 reason=f"{n} 会改变游戏世界，需要 ENGINE_WRITE 闸门。",
-                needs_flag="ALC_ENGINE_WRITE")
+                needs_flag="A3MCP_ENGINE_WRITE")
         if level == "read" and not self.engine_read:
             return Verdict(False, level, reason="只读闸门已关闭。",
-                           needs_flag="ALC_ENGINE_READ")
+                           needs_flag="A3MCP_ENGINE_READ")
         return Verdict(True, level)
 
     def snapshot(self) -> dict:
@@ -196,6 +276,7 @@ class Gates:
             "engine_read": self.engine_read,
             "engine_write": self.engine_write,
             "engine_exotic": self.engine_exotic,
+            "engine_call": self.engine_call,
             "ui_control": self.ui_control,
             "input_inject": self.input_inject,
             "input_foreground_only": self.input_foreground_only,
@@ -223,7 +304,7 @@ def audit(tool: str, detail: dict, path: Optional[str] = None) -> str:
            "pid": os.getpid(), "exe": sys.executable}
     rec.update(detail)
     line = json.dumps(rec, ensure_ascii=False, separators=(",", ":"))
-    target = path or os.environ.get("ALC_AUDIT_LOG")
+    target = path or os.environ.get("A3MCP_AUDIT_LOG")
     if target:
         try:
             os.makedirs(os.path.dirname(os.path.abspath(target)), exist_ok=True)

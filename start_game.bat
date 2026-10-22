@@ -12,15 +12,20 @@ rem Keep this file pure ASCII and CRLF (cmd.exe reads .bat as OEM codepage).
 setlocal
 set "GAME=H:\SteamLibrary\steamapps\common\Arma 3\Arma3_x64.exe"
 set "WS=H:\SteamLibrary\steamapps\common\Arma 3\!Workshop"
-set "MODS=%WS%\@Enhanced Movement;%WS%\@CBA_A3;%WS%\@Achilles;<repo>\game\mod"
+rem The mod path is derived from this script's own location (%~dp0 = the folder
+rem holding this file, trailing backslash included), so moving or renaming the
+rem repo needs no edit here. GAME and WS above still have to be edited by hand:
+rem where Steam put Arma 3 cannot be derived from anything in this repo.
+set "MODDIR=%~dp0game\mod"
+set "MODS=%WS%\@Enhanced Movement;%WS%\@CBA_A3;%WS%\@Achilles;%MODDIR%"
 
 if not exist "%GAME%" (
   echo [x] Game not found: %GAME%
   pause
   exit /b 1
 )
-if not exist "<repo>\game\mod\addons\a3mcp.pbo" (
-  echo [x] Mod PBO not found under <repo>\game\mod
+if not exist "%MODDIR%\addons\a3mcp.pbo" (
+  echo [x] Mod PBO not found under %MODDIR%
   pause
   exit /b 1
 )

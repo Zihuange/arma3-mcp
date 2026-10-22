@@ -20,7 +20,7 @@ Arma 的 addon 在 PBO 里存的是 **rapified `config.bin`**（二进制），�
 | `config_tree(root?, path?, filter?, limit?)` | 浏览子类；不带 root 时列常用顶层类 |
 | `config_class(root, path, keys?)` | 类摘要：父类、继承链、来源 mod、关键属性 |
 | `config_value(root, path, key\|keys)` | 精确读一个或多个属性 |
-| `config_search(pattern, root?)` | 按通配符找类名 |
+| `config_search(pattern, root?, path?)` | 按通配符找**某层直接子类**里的类名（不递归） |
 | `config_of(entity, keys?)` | 从**游戏内实体**跳到它的 config |
 | `config_cache(clear?)` | 查看/清空缓存 |
 
@@ -98,10 +98,21 @@ Arma 的 addon 在 PBO 里存的是 **rapified `config.bin`**（二进制），�
 
 1. **未上机验证**：MCP 侧链路（工具 → 通道 → 回执 → 渲染 → 缓存）已用假游戏
    端到端验证；**引擎侧查询的正确性未验证**（需要游戏）。
-2. `config_search` 的实现方式待定：SQF 侧的 `configClasses` 不支持通配符，
-   需要在游戏侧遍历+匹配，或由 MCP 侧多次分页拉取后在本地匹配。
-   当前契约交给游戏侧实现（`op=search`），上机时按实际性能决定是否改为
-   "MCP 侧分页 + 本地匹配"。
+2. ~~`config_search` 的实现方式待定~~ → **已实现**（2026-09-27）：游戏侧遍历
+   `configClasses` 子类时用标准 glob 逐条判掉（`*` 任意串、`?` 单字符），
+   MCP 侧另有一份可测试的参考实现与一次二次过滤。
+
+   ⚠ **搜索范围是"该层的直接子类"，不递归** —— 这是引擎 `configClasses` 的语义
+   （命令库原文："iterates through all available config **sub classes** of the
+   given config class"）。曾经因此被误判成"工具没实现"：有人搜
+   `BUS_Inf*`（root=CfgGroups）得到"无匹配"就断定坏了，而那个类其实在
+   `CfgGroups >> West >> BLU_F >> Infantry` 下。要找深层类，用 `path` 把层
+   指定过去，或先 `config_tree` 逐层下钻。
+
+   **历史 bug（已修）**：旧实现只取第一个 `*` 之前那段做子串包含 ——
+   模式以 `*` 开头（`*_F`）时那段为空，于是**匹配全部类**；`?` 则从未实现。
+   同时 `_total` 报的是"遍历到的子类数"而非"命中数"，两者被混为一谈，
+   于是"匹配 XXX：15604 个"这种读数会把子树的规模当成匹配数。
 3. `KEY_PRESETS` 的字段集是**按用途手工挑的**，不是引擎权威列表；上机后应
    按实际常用度调整。
 4. 继承属性的行为未定义：`config_class` 目前只读该类自身的属性。需要"沿继承链

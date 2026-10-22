@@ -7,6 +7,7 @@
   configQuery     读取游戏内 config 树
   configOfEntity  从实体跳到它的 config
   uiQuery         界面控件查询（列类名 / 按类名找控件）
+  fnList          从 CfgFunctions 拼出可调用的函数名（call 的目标核对）
 
 安全要点：表达式**必须**过 fn_validate 才允许编译。这里是第二道校验——
 MCP 侧已经校验过一次，但"只做一处校验"的失效方式是静默的
@@ -66,6 +67,9 @@ switch (_type) do {
     };
     case "uiquery": {
         [_cid, _args] call a3mcp_fnc_uiQuery;
+    };
+    case "fnlist": {
+        [_cid, _args] call a3mcp_fnc_fnList;
     };
     default {
         [_cid, false, "未知的命令类型：" + _type] call a3mcp_fnc_sendAck;

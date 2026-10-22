@@ -12,10 +12,12 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from mcpcore.registry import Registry, ToolResult
 from knowledge.index import CommandIndex, check_call, signature_variants
+from knowledge.expr import split_tokens  # noqa: F401  (转出给测试与调用方)
 from knowledge.serialize import SerializeError, build_command
 from adapters.channel import Channel, local_preview_command, new_cid
 from guard import audit
@@ -83,19 +85,90 @@ def headless_caveat(expr: str, chan) -> str:  # noqa: ANN001
     return "\n".join(lines)
 
 
+def expand_placeholders(expr: str, arg_count: int) -> str:
+    """把 `_pN` 占位符展开成 `(_this select N)`。
+
+    ## 为什么必须展开（而不是指望 SQF 侧理解 `_p0`）
+
+    `_p0` **不是** SQF 变量：没有任何东西会把它们绑到实参上。此前直接把原表达式
+    `compile` 掉，结果是**一切带参数的表达式都在引擎里报**
+    「表达式中未定义的变量：_p0」，而执行器仍回 `ok=true`、结果 `nil` ——
+    调用方看到的是"成功地什么都没做"。无参表达式不受影响，所以只用过无参命令的
+    测试看不出来（实测：`worldName` 正常，`getPos _p0` 返回 nil）。
+
+    展开成 `(_this select N)` 用引擎原生方式取参数：`_this` 就是实参数组
+    （`fn_run` 用 `_resolved call _code` 执行，参数数组由引擎传入 `_this`）。
+    这样**参数值不进代码**，拼接注入在这里没有立足之地。
+
+    放在 Python 侧的理由：同样的字符串处理在 SQF 里跑不出预期结果（实测
+    `[A3MCP][EXPAND] raw=typeName _p0 -> typeName _p0`，即引擎里那个实现没识别出
+    占位符），而这一侧可以用测试逐条覆盖。
+    """
+    def _sub(match: "re.Match[str]") -> str:
+        idx = int(match.group(1))
+        if idx >= arg_count:
+            return match.group(0)      # 越界的原样保留：校验器本该先拦下
+        return "(_this select %d)" % idx
+
+    # 只认"独立成词"的 _pN：后面不能紧跟字母/数字/下划线（`_p0abc` 不是占位符），
+    # 前面不能是词字符（避免把 `x_p0` 这类名字切开）。
+    out = re.sub(r"(?<![A-Za-z0-9_])_p(\d+)(?![A-Za-z0-9_])", _sub, expr)
+
+    # `call` 的右操作数要单独处理。
+    #
+    # 引擎要求它**在编译期可确定**：`_p0 call _p1` 直接展开成
+    # `(_this select 0) call (_this select 1)` 会被拒绝，实测报
+    # `Error position: <call (_this select 1)>`——右边是运行时表达式就不认。
+    # 所以先经 getVariable 把函数取回来：`call (missionNamespace getVariable X)`。
+    # 这一步在引擎里成立（实测 `missionNamespace getVariable "cba_fnc_vectadd"`
+    # 返回 CODE 类型），而函数名仍然只是**数据**，没有被编译成代码。
+    #
+    # 函数名必须是**全小写**：命名空间里的函数名是小写的（见
+    # allVariables 实测：bis_fnc_loop / cba_fnc_vectadd），带大写查不到。
+    def _call_target(match: "re.Match[str]") -> str:
+        # 取回的参数表达式要**再包一层括号**：`getVariable (_this select 1)`。
+        # 少了它就成了 `getVariable _this select 1`（先取变量名再取下标），语义错了。
+        return "call (missionNamespace getVariable (%s))" % match.group(1)
+
+    # ⚠ 两处括号要分清：外层字面括号必须转义（`\(` `\)`），而捕获组要包含
+    # **完整的 `_this select N`**——第一版只捕获了下标，替换出来是
+    # `getVariable 1`（少了个"取哪个"的表达式）。实测踩到过。
+    out = re.sub(r"(?<![A-Za-z0-9_])call\s+\((_this select \d+)\)",
+                 _call_target, out)
+    return out
+
+
 def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # noqa: ANN001
     """注册执行层工具。chan 由调用方注入（P0 是 NullChannel）。"""
 
-    def _check_expr(expr: str, argc: int) -> ToolResult | None:
-        """校验表达式（这一步在 MCP 侧先做一遍，游戏侧还会再校验一次）。"""
+    def _check_expr(expr: str, argc: int, argv: list) -> ToolResult | None:
+        """校验表达式（这一步在 MCP 侧先做一遍，游戏侧还会再校验一次）。
+
+        argv 必须传进来：`call` 的目标函数名在**数据**里，不看数据就没法核对
+        ——那是本框架里唯一一处"命令名之外还要看值"的判定。
+        """
         from knowledge.expr import ExprError, validate, whitelist_from_library
         try:
-            validate(expr, argc, whitelist_from_library())
+            validate(expr, argc, whitelist_from_library(), args=argv)
         except ExprError as exc:
+            # call 被拦时补一句上下文：它需要单独的闸门，而不是"表达式写错了"，
+            # 否则使用者会反复改表达式，而问题其实在开关上。
+            extra = ""
+            if " call" in " " + expr.lower() and "call" in expr.lower():
+                extra = ("\n提示：call 是有条件放行的一级，需要 A3MCP_ENGINE_CALL=1"
+                         "（或 A3MCP_PROFILE=debug），且目标函数名不得属于 "
+                         "CALL_DENY（bis_fnc_exec* / spawn* / dbg_* 等）。")
             return ToolResult.fail(
                 "表达式校验未通过：%s\n"
                 "表达式里每个标识符必须是 _p0.._pN 占位符，或白名单内的引擎命令；"
-                "禁止分号（多语句）与字符串字面量（参数必须是数据）。" % exc)
+                "禁止分号（多语句）与字符串字面量（参数必须是数据）。%s"
+                % (exc, extra))
+        if "call" in expr.lower() and not gu.engine_call:
+            return ToolResult.fail(
+                "表达式用到 call：它是**有条件放行**的一级（参数是函数引用，"
+                "必须逐个核对函数名），当前不会执行。\n"
+                "用 A3MCP_ENGINE_CALL=1 打开，或改用 A3MCP_PROFILE=debug。\n"
+                "与之相对，compile / spawn / execVM 仍是硬禁，任何开关都放不开。")
         return None
 
     def _do_exec(expr: str, args: list, dry_run: bool,
@@ -105,9 +178,13 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
         if not isinstance(args, list):
             return ToolResult.fail("args 必须是数组")
 
-        bad = _check_expr(expr, len(args))
+        bad = _check_expr(expr, len(args), args)
         if bad is not None:
             return bad
+
+        # 下发前展开占位符：`_p0` 不是 SQF 变量，不展开的话引擎里必然报
+        # "未定义的变量：_p0"，而执行器仍回成功、结果 nil（见 expand_placeholders）。
+        code = expand_placeholders(expr, len(args))
 
         if dry_run:
             audit("exec.dry_run", {"expr": expr, "argc": len(args)})
@@ -115,15 +192,21 @@ def register(reg: Registry, idx: CommandIndex, gu, chan: Channel) -> None:  # no
                 "【预演，未执行】\n"
                 "表达式：%s\n"
                 "参数  ：%s\n"
+                "下发形态：%s\n"
                 "校验  ：通过（MCP 侧）——游戏侧还会再校验一次\n"
-                "确认无误后去掉 dry_run 再调用。" % (expr, json.dumps(args, ensure_ascii=False)),
-                {"dry_run": True, "expr": expr, "args": args})
+                "确认无误后去掉 dry_run 再调用。"
+                % (expr, json.dumps(args, ensure_ascii=False), code),
+                {"dry_run": True, "expr": expr, "code": code, "args": args})
 
         cid = new_cid()
-        # 参数数组的形态：[表达式, 实参数组]
-        reply = chan.send({"cid": cid, "cmd": "exec", "args": [expr, args]},
+        # 参数数组的形态：[**展开后**的表达式, 实参数组]
+        #
+        # 展开必须在下发前做：SQF 侧拿到的应当是 `(_this select 0) setPosATL _p1`
+        # 这种引擎能直接执行的形式。原表达式（含 _pN）仍留在审计里，便于对账。
+        reply = chan.send({"cid": cid, "cmd": "exec", "args": [code, args]},
                           timeout_s=timeout_s)
-        audit("exec", {"cid": reply.cid, "expr": expr, "argc": len(args),
+        audit("exec", {"cid": reply.cid, "expr": expr, "code": code,
+                       "argc": len(args),
                        "ok": reply.ok, "elapsed_ms": reply.elapsed_ms,
                        "channel": reply.channel, "error": reply.error[:200]})
 

@@ -369,13 +369,13 @@ class TcpChannel(Channel):
     # ---------------------------------------------------------------- 收消息
 
     def _trace(self, direction: str, payload) -> None:
-        """可选诊断：ALC_TRACE=1 时把消息流记到 stderr。
+        """可选诊断：A3MCP_TRACE=1 时把消息流记到 stderr。
 
         为什么需要：排查"命令发出去了但游戏没反应"时，必须能分开
         "MCP 没送到" / "DLL 没回" / "SQF 没执行"三种情况。默认关闭，
         因为它会刷屏；只在定位链路问题时打开。
         """
-        if not os.environ.get("ALC_TRACE"):
+        if not os.environ.get("A3MCP_TRACE"):
             return
         text = payload if isinstance(payload, str) else json.dumps(
             payload, ensure_ascii=False)[:300]
@@ -488,22 +488,22 @@ class TcpChannel(Channel):
 def tcp_channel_from_env(env: Optional[dict] = None) -> Channel:
     """按环境变量构造通道。
 
-    ALC_CHANNEL=tcp 时启用本通道；其余情况退回 NullChannel（诚实报错）。
+    A3MCP_CHANNEL=tcp 时启用本通道；其余情况退回 NullChannel（诚实报错）。
     """
     from .channel import NullChannel
 
     e = env if env is not None else os.environ
-    kind = (e.get("ALC_CHANNEL") or "").strip().lower()
+    kind = (e.get("A3MCP_CHANNEL") or "").strip().lower()
     if kind in ("", "null", "none"):
         return NullChannel()
     if kind != "tcp":
         return NullChannel(reason="未知的通道类型 %r（目前支持 tcp）" % kind)
-    host = (e.get("ALC_TCP_HOST") or "0.0.0.0").strip()
+    host = (e.get("A3MCP_TCP_HOST") or "0.0.0.0").strip()
     try:
-        port = int(e.get("ALC_TCP_PORT") or DEFAULT_PORT)
+        port = int(e.get("A3MCP_TCP_PORT") or DEFAULT_PORT)
     except ValueError:
         port = DEFAULT_PORT
-    token = e.get("ALC_TCP_TOKEN") or DEFAULT_TOKEN
+    token = e.get("A3MCP_TCP_TOKEN") or DEFAULT_TOKEN
     chan = TcpChannel(host=host, port=port, token=token)
     if not chan.start():
         # 启动失败不抛异常：让工具的报错里带上原因（比崩溃更有用）

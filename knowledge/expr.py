@@ -48,26 +48,175 @@ ALLOWED_PUNCT = set("()[]{}.,+-*/%^!=<>&|:;_ \t")
 
 # 永远不允许进入白名单的名字：它们能改变全局状态或引入新的执行面，
 # 即使命令库收录了它们，也不能通过动态表达式触达。
+#
+# `call` **不在**这个集合里，但它也不是普通白名单成员：它是唯一一条
+# "风险由参数决定"的命令。放行它要三条同时成立（见 _check_call_target）：
+#   1. 函数名必须走**数据占位符**——表达式里不许出现字符串字面量，所以
+#      函数名不可能被写进文本，只能是调用方传进来的数据；
+#   2. 该数据必须是合法标识符形状（不是路径、不是含空格的东西）；
+#   3. 不在 CALL_DENY 里（bis_fnc_exec* / spawn* / dbg_* 一律拒绝）。
+#
+# 这三条把 call 从"参数无法校验"变成"参数可以逐个校验"，而不是"放开了 call"。
+# 引擎定义支持字符串形态：BI 命令库对 `call code` 的 code 参数注明
+# "also accepts datatype String"——传字符串时按函数名解析，不建新代码对象。
 DENY_NAMES = {
     "setvariable", "setvariableserverside", "publicvariable",
     "publicvariableserverside", "publicvariableclient", "compile",
-    "compilefinal", "call", "spawn", "execvm", "execfsm", "exec",
+    "compilefinal", "spawn", "execvm", "execfsm", "exec",
     "callextension", "loadfile", "preprocessfile",
     "preprocessfilelinenumbers", "preprocessconfigfile",
     "remoteexec", "remoteexeccall", "bis_fnc_mp",
 }
 
+# 表达式切分规则 —— **唯一定义处**。
+#
+# SQF 侧 `fn_validate::_splitExpr` 必须与这里逐字符等价。为什么强调：
+# 两侧曾经不一致（一边丢括号、一边把括号留成 token），症状是 SQF 报
+# "call 的目标形态无法识别"——它认不出 MCP 自己发下去的表达式，而报错文本
+# 看起来像安全策略在正常拒绝。为一个不一致重启了三次游戏，代价全是上机时间。
+# 规则：空白 ` \t`、圆括号、方括号、花括号、逗号 —— **全部丢弃**，不留 token。
+TOKEN_SEPARATORS = " \t()[]{},"
+TOKEN_SPLIT_RE = re.compile(r"[%s]+" % re.escape(TOKEN_SEPARATORS))
+
+
+def split_tokens(expr: str) -> list[str]:
+    """按 token 切分表达式（丢弃全部分隔符，不改大小写）。"""
+    return [t for t in TOKEN_SPLIT_RE.split(expr) if t]
+
+
 PLACEHOLDER_RE = re.compile(r"^_p(\d+)$")
 IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+# 引擎在特定上下文里**自动赋值**的隐式变量 —— 放行它们。
+#
+# 依据是一个可验证的技术事实，不是"看起来无害"：命令库 5181 条里，以 `_` 开头的
+# 命令名有 **0 条** —— SQF 的命令名不以 `_` 开头。所以任何 `_` 开头的标识符
+# 必然是**变量读取**，不可能成为命令调用；而"命令名注入"正是白名单要防的
+# 唯一一件事。放行它们不扩大任何攻击面。
+#
+# 为什么只放行这几枚、而不是所有 `_xxx`：校验器还要能回答"这个标识符是哪来的"。
+# 这四枚由引擎在 forEach/apply/filter/count（`_x`、`_forEachIndex`）、
+# call/spawn（`_this`）、catch（`_exception`）里赋值；别的 `_foo` 是调用方自造
+# 的变量，放行会把"写错名字被早期拒绝"退化成"进了游戏才报未定义变量"。
+#
+# 实测动因：`vehicles apply {[typeOf _x]}` 曾被拒（`_x` 不在白名单），而
+# `apply`/`count`/`select`/`findif` 这些命令本来就在白名单里 —— 差的就是这一枚，
+# 函数式写法整条用不了。
+IMPLICIT_VARIABLES = frozenset({
+    "_this",           # call / spawn / 代码块收到的参数
+    "_x",              # forEach / apply / filter / count 的当前元素
+    "_foreachindex",   # 同上的下标
+    "_exception",      # catch 捕获到的异常
+})
+
+# call 的目标必须是"像函数名/变量名"的一段：不能含空格、点、斜杠、引号。
+# 形状校验**不代替**值校验（值校验在 _check_call_target 里做），它只是先挡掉
+# 一眼就不该出现在这里的形态（例如 "a.sqf"、"x y"）。
+_CALL_TARGET_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
 
 
 class ExprError(ValueError):
     """表达式不合法。消息面向使用者，必须能直接看出哪里不对。"""
 
 
+def _call_target_slot(expr: str, names: list[str]) -> int | None:
+    """表达式里 `call` 目标的**参数下标**；没写 call 或认不出来时返回 None。
+
+    为什么只认占位符：函数名一旦以字面量形式出现，就等于把"调用什么"写死在
+    表达式文本里，白名单也就无从逐条核对。传成数据（_pN）是本方案成立的前提。
+
+    三种形态（都会出现，少认一种就是"自己人的输出自己看不懂"）：
+      `_p0 call _p1`                                  → 1
+      `_p0 call (_this select 1)`                     → 1（展开形态）
+      `_p0 call (missionNamespace getVariable _p1)`   → 1（下发形态）
+    """
+    toks = split_tokens(expr)
+    for i, tok in enumerate(toks):
+        if tok.lower() != "call" or i + 1 >= len(toks):
+            continue
+        nxt = toks[i + 1]
+        ph = PLACEHOLDER_RE.match(nxt)
+        if ph:
+            return int(ph.group(1))
+        # 展开形态 `(_this select N)` 与下发形态 `(missionNamespace getVariable …)`
+        #
+        # ⚠ 切分把括号整个去掉了（分隔符集合含 `()`），这里**看不到**括号，
+        # 只能按名字判断：紧跟 call 的是 `_this`/`missionNamespace`，
+        # 参数就是其后那组 `select N`。按边界位置去数括号会永远扑空——
+        # 那样 CALL_DENY 等于没被核对，而报错还显示成"目标必须写成占位符"，
+        # 看起来像安全策略在起作用（实测踩过）。
+        if nxt.lower() == "_this" and i + 3 < len(toks):
+            if toks[i + 2].lower() == "select" and toks[i + 3].isdigit():
+                return int(toks[i + 3])
+        if nxt.lower() == "missionnamespace" and i + 5 < len(toks):
+            if toks[i + 2].lower() != "getvariable":
+                return None
+            # 括号已被切掉，参数就是紧跟 getVariable 的那组：`_this select N`
+            d, e, f = toks[i + 3].lower(), toks[i + 4].lower(), toks[i + 5]
+            if d == "_this" and e == "select" and f.isdigit():
+                return int(f)
+            ph2 = PLACEHOLDER_RE.match(f)
+            if ph2:
+                return int(ph2.group(1))
+        return None            # 有 call，但目标形态不认识 → 交给调用方报错
+    return None
+
+
+def _fn_name_from_arg(arg) -> str | None:
+    """从实参里取出函数名；取不到返回 None。
+
+    实参有两种携带方式：
+      "a3mcp_fnc_init"                 → 直接就是函数名
+      ["a3mcp_fnc_init", [参数...]]     → 第一个元素是函数名（call 的目标）
+
+    ⚠ 返回 None 表示"这个值当不了函数名"，**不是**"没传"。
+    """
+    if isinstance(arg, str):
+        return arg
+    if isinstance(arg, list) and arg and isinstance(arg[0], str):
+        return arg[0]
+    return None
+
+
+def check_call_target(fn_name) -> None:
+    """校验 call 的目标函数名；不合法时抛 ExprError。
+
+    这是"结构化白名单"里**唯一**能逐条核对的部分，所以错在哪必须说清楚：
+    使用者看到的应当是"这个名字不允许 / 形状不对"，而不是笼统的"表达式不合法"。
+
+    ⚠ 类型必须**显式**判断，不能只靠正则：`_CALL_TARGET_RE.match(42)` 抛的是
+    TypeError，而调用方只捕获 ExprError ——那个 TypeError 会一路冒到 MCP 工具层，
+    变成一条与安全无关的内部错误。实测踩到过（测试传数字时触发）。
+    """
+    from guard.gates import call_denied                # 延迟导入，避免环依赖
+    if not isinstance(fn_name, str):
+        raise ExprError(
+            "call 的目标必须是**函数名字符串**，实际拿到 %s。"
+            "形式是 `_p0 call _p1`，args 里第 1 项给函数名。"
+            % type(fn_name).__name__)
+    if not fn_name:
+        raise ExprError(
+            "call 的目标是空字符串：它必须是要调用的函数名"
+            "（例：a3mcp_fnc_validate）。")
+    if not _CALL_TARGET_RE.match(fn_name):
+        raise ExprError(
+            "call 的目标 %r 不是合法函数名：只允许字母/数字/下划线，且以字母或"
+            "下划线开头。call 只用于按名字调用已编译的函数。" % fn_name)
+    why = call_denied(fn_name)
+    if why:
+        raise ExprError(
+            "call 的目标 %s 被永久拒绝（%s）。这一类把字符串编译成代码，"
+            "等于把 call 变回 compile——所以它不受 A3MCP_ENGINE_CALL 与白名单影响。"
+            % (fn_name, why))
+
+
 def validate(expr: str, arg_count: int, whitelist: set[str] | None = None,
-             index=None) -> dict:
-    """校验表达式。通过返回 {'ok': True, 'names': [...]}，否则抛 ExprError。"""
+             index=None, args: list | None = None) -> dict:
+    """校验表达式。通过返回 {'ok': True, 'names': [...]}，否则抛 ExprError。
+
+    args 是可选的**实参**。给了它就额外校验 `call` 的目标函数名——那是本框架里
+    唯一"命令名之外还需要看值"的判定，光看表达式文本看不出来（目标在数据里）。
+    """
     if not isinstance(expr, str) or not expr.strip():
         raise ExprError("表达式为空")
     if len(expr) > 400:
@@ -85,6 +234,11 @@ def validate(expr: str, arg_count: int, whitelist: set[str] | None = None,
         raise ExprError("表达式含不允许的字符：%s" % ", ".join(repr(c) for c in bad_chars))
 
     names = IDENT_RE.findall(expr)
+    # 表达式可能已经处于**展开形态**（`(_this select 0)`）——MCP 侧展开后就长这样，
+    # 而校验在展开前后各跑一次（便于逐条测试与复用）。此时参数由 `_this` 承载，
+    # 不该再按"必须出现 _pN"来要求，否则每次调用都会被自己的展开形态判死。
+    expanded = "_this" in names
+
     placeholders = []
     commands = []
     for name in names:
@@ -99,18 +253,29 @@ def validate(expr: str, arg_count: int, whitelist: set[str] | None = None,
             continue
         commands.append(name)
 
-    if arg_count and not placeholders:
-        raise ExprError("表达式没有引用任何参数占位符，但传了 %d 个参数——"
-                        "参数会被静默丢弃" % arg_count)
-    missing = sorted(set(range(arg_count)) - set(placeholders))
-    if missing:
-        raise ExprError("参数下标 %s 未被表达式使用"
-                        % ", ".join(str(i) for i in missing))
+    if not expanded:
+        if arg_count and not placeholders:
+            raise ExprError("表达式没有引用任何参数占位符，但传了 %d 个参数——"
+                            "参数会被静默丢弃" % arg_count)
+        missing = sorted(set(range(arg_count)) - set(placeholders))
+        if missing:
+            raise ExprError("参数下标 %s 未被表达式使用"
+                            % ", ".join(str(i) for i in missing))
 
     lowered = [c.lower() for c in commands]
     for name in lowered:
         if name in DENY_NAMES:
             raise ExprError("命令 %s 在永久禁区内（不得通过动态表达式触达）" % name)
+
+    # `call` 的额外一道：目标是数据，必须拿出来逐个核对。
+    if "call" in lowered:
+        slot = _call_target_slot(expr, names)
+        if slot is None:
+            raise ExprError(
+                "call 的目标必须写成占位符（形如 `_p0 call _p1`）：函数名要作为"
+                "数据传入才能逐条核对，写进表达式文本会让这条校验失效。")
+        if args is not None and slot < len(args):
+            check_call_target(_fn_name_from_arg(args[slot]))
 
     if whitelist is not None:
         unknown = sorted({c for c, low in zip(commands, lowered)
@@ -153,6 +318,10 @@ def whitelist_from_library(families: list[str] | None = None,
 
     默认排除函数库：`BIS_fnc_*` 数量大、副作用难以静态判断，且多数不是
     "一条命令改一个状态"的形态。需要时用 families 显式指定。
+
+    `call` 是唯一的例外：它属于"分级为 called_gated、但仍进白名单"的一条。
+    它不进白名单的话本方案就没有入口——而它真正的把关在 validate 里做
+    （目标函数名逐个核对），不靠"是否出现在白名单"这一层。
     """
     idx = default_index()
     out = set()
@@ -167,7 +336,11 @@ def whitelist_from_library(families: list[str] | None = None,
         # 与闸门分级对齐：EXOTIC 级（凭空生成资源 / 网络协调 / 调试后门）
         # 不进白名单。否则"动态表达式"会绕过闸门直接触达它们——
         # 分级就成了摆设（这轮测试正是抓出了这处不一致）。
-        if _classify_level(low) not in ("read", "write"):
+        #
+        # call 是例外，且是唯一的例外：它的分级叫 call_gated，是"要看参数"而不是
+        # "不能进来"。把它挡在白名单外，本方案就没有入口了；真正的把关在
+        # validate 的 check_call_target（逐个核对函数名）。
+        if low != "call" and _classify_level(low) not in ("read", "write"):
             continue
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", rec["n"]):
             continue          # 符号运算符、含空格的命令名不进白名单
@@ -177,6 +350,14 @@ def whitelist_from_library(families: list[str] | None = None,
         if _looks_like_operator_alias(low):
             continue
         out.add(low)
+
+    # 隐式变量必须放行，否则两件事同时坏掉：
+    #   · 修复占位符等于没修 —— 展开把 `_p0` 变成 `(_this select 0)`，
+    #     而 `_this` 不在命令库里，于是每条带参表达式都被判"白名单外的名字"；
+    #   · 函数式写法整条用不了 —— `apply`/`count`/`select` 本来就在白名单里，
+    #     却因为 `_x` 被拒而无法使用。
+    # 依据与边界见 IMPLICIT_VARIABLES 上方注释。
+    out |= IMPLICIT_VARIABLES
     return out
 
 

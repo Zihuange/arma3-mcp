@@ -37,21 +37,37 @@ MSVC 14.34）＋ CMake 3.25。
 
 游戏侧 DLL 会主动连 **`127.0.0.1:32131`**（MCP 与游戏同机，走本机回环）。
 
-在**Windows** 上重启 MCP 服务（会同时开 HTTP 与游戏连接端口）：
+在**Windows** 上启动 MCP 服务（同时开 HTTP 入口与游戏连接端口）：
 
 ```bat
 <repo>\start_windows.bat
 ```
 
-启动横幅里应出现两行关键信息：
+脚本里已把两个**必需**的默认值设好。缺任意一个，通道就是 `null`，
+**一切碰游戏的操作（exec / config_*）都不工作**，而 HTTP 侧看起来完全正常：
 
-```
-* DSH 填这个      : http://<vEthernet(WSL) 地址>:32128/mcp
-* 游戏侧扩展连这个 : 127.0.0.1:32131
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `A3MCP_CHANNEL` | `tcp` | 不开就不会监听游戏连接端口（早先的脚本漏了这句，实测踩到） |
+| `A3MCP_TCP_PORT` | `32131` | **必须与 DLL 的默认端口一致**（`arma3_mcp_extension.cpp` 里 `std::string port = "32131"`）。不一致时游戏侧连不上，且没有明显提示 |
+
+启动横幅会打印 `channel : tcp on port 32131` —— **看到 `null` 就说明通道没开**。
+
+⚠ **`32131` 被占用时，通道会静默退回 `null`**，`gates_status` 只显示"未接通"。
+本机实测遇到过一种**残留占用**：上一轮的 MCP 绑过 32131 → WSL2 为它建立
+localhost 转发（`wslrelay.exe`）→ MCP 被杀后**转发进程残留**，继续占着 32131，
+于是新 MCP 绑不上。诊断与清理：
+
+```bash
+# 谁占着 32131
+/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -Command \
+  "Get-NetTCPConnection -LocalPort 32131 -State Listen | Select-Object LocalAddress,OwningProcess"
+# 占用者是 wslrelay.exe（WSL2 机制进程）→ 清掉它即可释放
+/mnt/c/Windows/System32/cmd.exe /c "taskkill /F /PID <那个 PID>"
 ```
 
-**判据**：看到 `游戏侧扩展连这个` 那行。没看到说明游戏端口没开起来
-（可能被占用；换 `--game-port` 并通过环境变量告诉 DLL，见第 3 步）。
+**判据**：`gates_status` 的通道是 `null` 还是 `tcp` ——
+`null` = 端口没开起来（查上面的占用）；`tcp／未接通` = 端口好的，是游戏侧没连上来。
 
 ---
 
@@ -206,7 +222,7 @@ game/mod/
 |---|---|
 | DLL 一直连不上 | MCP 是否在跑、端口是否被占；DLL 的 `configure` 地址是否对；Windows 防火墙对本机回环一般无影响，但若改过策略需放行 |
 | 执行器没启动 | RPT 里有没有 `[A3MCP]` 字样；模组是否真的加载（`CfgPatches` 里应有 `a3mcp`） |
-| 工具报「未接通」 | `gates_status` 看通道状态；MCP 侧 `start_windows.bat` 的横幅里游戏端口那行是否出现 |
+| 工具报「未接通」 | 先看 `gates_status` 的**通道**是 `tcp` 还是 `null`：`null` = 端口没开起来（见第 0 节的占用排查，含 `wslrelay` 残留）；`tcp` 但未接通 = 游戏侧没连上来 |
 | 命令发出去没回执 | `game_events` 看有没有 `evt:cmd_error`；RPT 里搜 `[A3MCP][ERR]` |
 | 表达式被拒 | 回执里会带原因（白名单外标识符 / 含分号 / 占位符越界），按原因改调用 |
 | PBO 加载了但函数不存在 | 用 `tools/pbo_verify.py` 复核 PBO 是否含 config.bin 与全部 .sqf |

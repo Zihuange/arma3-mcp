@@ -14,16 +14,21 @@
 |---|---|---|
 | ~~**`configClasses` 的分页语义**~~ | ✅ **已实测（2026-09-25）**：`CfgVehicles` 8568 个子类、**0.21 s**（客户端，`CfgVehicles` 就是最大的子树，顶层类只有 10 个）。0.11 s 是固定往返开销，**遍历 8568 个只多 0.1 s** → **不需要分页**，5 秒超时约 25 倍余量 | — |
 | **`compile` 的缓存收益** | 需在游戏侧加计时日志（改模组） | **已降为低优先级**：`exec` 往返约 100 ms，会淹没 `compile` 的量级（0.1–1 ms）。按量级判断收益很小 —— 省一次 compile，换一次 HashMap 查表 |
+| ~~**`call` 的 `getVariable` 形态能否执行**~~ | ✅ **已实测（2026-09-27）**：`(_this select 0) call (missionNamespace getVariable (_this select 1))` 在引擎里成立。`a3mcp_fnc_resolve` 返回 `"u_1"`（参数真的传进函数）、`a3mcp_fnc_validate` 返回 `[true, ["worldname"], ""]`、`BIS_fnc_execVM` 被 CALL_DENY 拒 | 见 D38。**函数名必须全小写**（命名空间里的函数名是小写的） |
+| **`function_list` 的函数名拼接规则** | 需在游戏内核对 `tag` 与 className 的大小写规则 | 前提已成立：`config_tree root=CfgFunctions` 返回 49 个顶层类、任务下可枚举（D37 实测）。**别照推断写拼接规则** |
 
 ## 二、新能力（没有完成线）
 
 | 项 | 说明 |
 |---|---|
-| **自建 UI（`createDisplay` / `createDialog`）** | ⚠ **实测发现前提**：这两个命令是 **exotic 级**，被闸门按设计拦着（`createDisplay：拒绝（分级 exotic）`，需 `ALC_ENGINE_EXOTIC=1`）—— 不是"工具没封装"（原来的描述不准确）。分类是合理的：创建 UI 确实属于"凭空生成"。**要验证 D24 那半边"写入对自建控件可靠"，必须先开这个闸门** —— 那半边至今仍是推断，没测过 |
+| **自建 UI（`createDisplay` / `createDialog`）** | ⚠ **实测发现前提**：这两个命令是 **exotic 级**，被闸门按设计拦着（`createDisplay：拒绝（分级 exotic）`，需 `A3MCP_ENGINE_EXOTIC=1`）—— 不是"工具没封装"（原来的描述不准确）。分类是合理的：创建 UI 确实属于"凭空生成"。**要验证 D24 那半边"写入对自建控件可靠"，必须先开这个闸门** —— 那半边至今仍是推断，没测过 |
 | ~~**`input_drag` 只支持左键**~~ | ✅ **已完成** —— 加 `input_macro` 时一并给了 DLL 的 `input_drag` 一个 button 参数，本次又补齐了 MCP 侧（schema / 参数传递 / 描述三处）。右键拖拽现在发得出来了 |
-| **`ui_locate` 缺"发现类名"的能力** | 实测（D35）：在 Eden 编辑器里，它能按文本找到菜单（"场景"→ class=`Scenarios`），但**工具栏图标没有文本**，而 Eden 用的又是**自定义类名**（不是 `Rsc*`）—— 试了五个常见类名零匹配。于是"我不知道它叫什么"这个最常见的起点反而无从下手。做法：加一个只列类名（不回读位置）的模式，或支持按屏幕区域过滤 |
+| ~~**`ui_locate` 缺"发现类名"的能力**~~ | ✅ **已完成** —— 模组侧加 `a3mcp_fnc_uiQuery` 一次遍历列类名，`ui_locate` 加 `list_classes`。实测一步到位：列出的类名里直接就有 `WidgetTranslation` / `WidgetRotation` / `WidgetScaling`，再用 `match_class` 拿到坐标 (70,41) / (117,41) / (164,41)（D36） |
+
 | **C 类清单继续扩大** | 目前 4 条（`hint` / `systemChat` / `forceMap` / `openMap`），全部实测过。可按能力矩阵逐类往下测 —— 每条都堵一个"静默失败"，但**边际性价比递减**，且永远没有"测完了"的那一刻（5181 条命令） |
 
+| **视觉验证受阻（provider 图片）** | 工具返回的图片进不了模型上下文（此前记录过的补丁正是为此）。直接后果：点 `WidgetTranslation` 之后无法用截图确认"三轴箭头出现了"，于是控件轴拖动 / Scaling / Vertical Mode 三项虽已拿到坐标、仍只能记为未测 |
+| **`start_game.bat` 返回码 127** | 游戏能正常启动，但脚本退出码是 127（命令未找到）。影响自动化：按退出码判断"启动是否成功"会误判 |
 ## 三、受阻
 
 | 项 | 缺什么 |
@@ -40,10 +45,18 @@
 - **心跳阈值 `STALE_MS = 3000`** → 正常 94–110 ms，30 倍余量
 - **`input_macro` 操作序列（宏）** → 一次调用执行一串操作；含组合键 `combo`、鼠标按下/松开 `down`/`up`、双击 `dblclick`（间隔可控）、以及三键拖拽（D32）
 - **DIK 扫描码表** → `docs/dik.md` + `data/dik.json`，144 个码，提取自 Windows SDK 的 `dinput.h`（`keyName` 那条查证路走不通，所以要做一份可信的静态表）
+- **`ui_locate` 列类名 + 控件定位**（D36）→ 打通"先列类名、再精确坐标"这条链路
 - **Eden 教程驱动的操作测试** → 三种基本变换全部实测通过：旋转（`Shift`+拖拽）、水平移动（拖拽）、上下移动（`Alt`+拖拽）（D32–D34）
 - **主菜单启动执行器** → 探明**不可行**（主菜单下模组 CfgFunctions 未编译），记在 D20，不再尝试
+- **`call` 结构化放行**（D37/D38）→ `call_gated` 级 + `CALL_DENY`（优先级高于白名单）+ MCP 侧三层核对 + SQF 侧独立实现；真引擎实测通过
+- **带参表达式修复**（D38）→ `_p0` 占位符从未绑定（一切带参表达式静默返回 nil）；改在 MCP 侧展开成 `(_this select N)`，离线 11 条用例覆盖误替换边界
+- **`function_list`（第 27 个工具）**（D39）→ 从 `CfgFunctions` 现算可调用的函数名，供 `call` 的目标核对。拼接规则经上机实测（`A3`/`A2PMC` 的 tag 也是 `BIS`；`Ares` 无 tag 字段则用类名；函数名大小写不敏感）
+- **切分契约统一** → 切分规则只有一处定义（`knowledge/expr.py::split_tokens`）；SQF 侧照它实现，`TestSqfCallTargetContract` 在离线锁住"哪种形态取哪个下标"
 
 ## 维护约定
 
 - `decisions.md` 是**历史记录**：里面的"当时不知道"不要改写成"现在知道"，否则记录失去意义。更新状态请追加"后续"，或改 `README` / `onmachine.md` 这类**描述当前状态**的文件。
+- **改 SQF 侧逻辑前，先在离线照抄一份并测住契约**（见 `TestSqfCallTargetContract`）。
+  上一轮因为"两侧实现悄悄不一致"重启了七次游戏，而症状全都表现为
+  "静默出错但回执 ok=true"——上机调试这类问题的性价比极低。
 - **判断错了就改**，并在提交里说清为什么错 —— 本文件里"自建 UI"那条就是这么修正过来的（曾误以为它是 P2 的出路）。

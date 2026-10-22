@@ -20,15 +20,30 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from guard import Gates, classify, forbidden_list  # noqa: E402
-from guard.gates import CHEAT_COMMANDS, FORBIDDEN_EXACT, WRITE_PREFIXES  # noqa: E402
+from guard.gates import (  # noqa: E402
+    CHEAT_COMMANDS, FORBIDDEN_EXACT, WRITE_PREFIXES, call_denied,
+    call_denied_list,
+)
 
 
 class TestClassification(unittest.TestCase):
     def test_forbidden_dynamic_code(self):
-        for cmd in ("execVM", "call", "compile", "compileFinal", "spawn",
+        for cmd in ("execVM", "compile", "compileFinal", "spawn",
                     "BIS_fnc_execVM", "BIS_fnc_spawnGroup", "loadFile",
                     "preprocessFile", "callExtension", "remoteExec"):
             self.assertEqual(classify(cmd), "forbidden", cmd)
+
+    def test_call_is_its_own_level(self):
+        """call 不是硬禁，也不是普通写命令——它是"要看参数"的一级。
+
+        判据（本轮改动的全部理由）：compile/spawn/execVM 的参数是**任意字符串**，
+        放行即失守；call 的参数是**函数引用**，可以逐个核对名字。
+        所以它有独立的级别，而不是被并入 forbidden 或 write。
+        """
+        self.assertEqual(classify("call"), "call_gated")
+        self.assertEqual(classify("CALL"), "call_gated")
+        # 它必须与 write/read 区分开：混进任一级都会让开关失去意义
+        self.assertNotIn(classify("call"), ("read", "write", "exotic", "forbidden"))
 
     def test_case_insensitive(self):
         self.assertEqual(classify("EXECVM"), "forbidden")
@@ -87,18 +102,55 @@ class TestGates(unittest.TestCase):
         self.assertTrue(g.engine_read)
         self.assertTrue(g.engine_write)
         self.assertFalse(g.engine_exotic, "EXOTIC 默认必须关闭")
+        self.assertFalse(g.engine_call, "call 闸门默认必须关闭")
         self.assertFalse(g.input_inject, "输入注入默认必须关闭")
         self.assertTrue(g.input_foreground_only)
 
+    def test_call_gate(self):
+        """call 默认关；开了才放行——这是它与硬禁的区别。
+
+        与硬禁的差别必须体现在测试里：compile 在任何开关组合下都拒绝，
+        而 call 恰好相反——**开关是它唯一的入口**。
+        """
+        v = Gates.from_env({}).check("call")
+        self.assertFalse(v.allowed)
+        self.assertEqual(v.level, "call_gated")
+        self.assertEqual(v.needs_flag, "A3MCP_ENGINE_CALL")
+
+        v2 = Gates.from_env({"A3MCP_ENGINE_CALL": "1"}).check("call")
+        self.assertTrue(v2.allowed)
+
+    def test_call_still_blocked_when_all_other_gates_open(self):
+        """把其它闸门全开也放不开 call：它只认自己的开关。"""
+        g = Gates.from_env({"A3MCP_ENGINE_READ": "1", "A3MCP_ENGINE_WRITE": "1",
+                            "A3MCP_ENGINE_EXOTIC": "1", "A3MCP_ALLOW_CHEAT": "1",
+                            "A3MCP_ALLOW_COMMANDS": "call"})
+        self.assertFalse(g.check("call").allowed,
+                         "显式白名单也不该放行 call——它要看的是函数名，不是命令名")
+
+    def test_debug_profile_opens_call_and_exotic_only(self):
+        """debug 档只默认打开"能查能调"的两项，不动写与输入注入。"""
+        g = Gates.from_env({"A3MCP_PROFILE": "debug"})
+        self.assertTrue(g.engine_call)
+        self.assertTrue(g.engine_exotic)
+        self.assertFalse(g.input_inject, "debug 不该顺手打开输入注入")
+        self.assertTrue(g.engine_write)
+
+    def test_debug_profile_does_not_unlock_hard_ban(self):
+        """debug 档解不开硬禁——这是本档能存在的前提。"""
+        g = Gates.from_env({"A3MCP_PROFILE": "debug"})
+        for cmd in ("compile", "spawn", "execVM", "callExtension", "remoteExec"):
+            self.assertFalse(g.check(cmd).allowed, cmd)
+
     def test_env_parsing(self):
-        g = Gates.from_env({"ALC_ENGINE_EXOTIC": "1", "ALC_ENGINE_WRITE": "off",
-                            "ALC_INPUT_INJECT": "yes"})
+        g = Gates.from_env({"A3MCP_ENGINE_EXOTIC": "1", "A3MCP_ENGINE_WRITE": "off",
+                            "A3MCP_INPUT_INJECT": "yes"})
         self.assertTrue(g.engine_exotic)
         self.assertFalse(g.engine_write)
         self.assertTrue(g.input_inject)
 
     def test_env_blank_means_default(self):
-        g = Gates.from_env({"ALC_ENGINE_EXOTIC": "", "ALC_ENGINE_WRITE": "  "})
+        g = Gates.from_env({"A3MCP_ENGINE_EXOTIC": "", "A3MCP_ENGINE_WRITE": "  "})
         self.assertFalse(g.engine_exotic)
         self.assertTrue(g.engine_write)
 
@@ -111,41 +163,41 @@ class TestGates(unittest.TestCase):
         self.assertTrue(Gates.from_env({}).check("setPosATL").allowed)
 
     def test_write_blocked_when_disabled(self):
-        v = Gates.from_env({"ALC_ENGINE_WRITE": "0"}).check("setPosATL")
+        v = Gates.from_env({"A3MCP_ENGINE_WRITE": "0"}).check("setPosATL")
         self.assertFalse(v.allowed)
-        self.assertEqual(v.needs_flag, "ALC_ENGINE_WRITE")
+        self.assertEqual(v.needs_flag, "A3MCP_ENGINE_WRITE")
 
     def test_read_blocked_when_disabled(self):
-        v = Gates.from_env({"ALC_ENGINE_READ": "0"}).check("getPos")
+        v = Gates.from_env({"A3MCP_ENGINE_READ": "0"}).check("getPos")
         self.assertFalse(v.allowed)
-        self.assertEqual(v.needs_flag, "ALC_ENGINE_READ")
+        self.assertEqual(v.needs_flag, "A3MCP_ENGINE_READ")
 
     def test_exotic_blocked_by_default(self):
         v = Gates.from_env({}).check("createVehicle")
         self.assertFalse(v.allowed)
-        self.assertEqual(v.needs_flag, "ALC_ENGINE_EXOTIC")
+        self.assertEqual(v.needs_flag, "A3MCP_ENGINE_EXOTIC")
 
     def test_cheat_needs_own_switch(self):
         v = Gates.from_env({}).check("attrit")
         self.assertFalse(v.allowed)
-        self.assertEqual(v.needs_flag, "ALC_ALLOW_CHEAT")
+        self.assertEqual(v.needs_flag, "A3MCP_ALLOW_CHEAT")
 
     def test_cheat_allowed_when_both_on(self):
-        v = Gates.from_env({"ALC_ENGINE_EXOTIC": "1", "ALC_ALLOW_CHEAT": "1"}) \
+        v = Gates.from_env({"A3MCP_ENGINE_EXOTIC": "1", "A3MCP_ALLOW_CHEAT": "1"}) \
             .check("attrit")
         self.assertTrue(v.allowed)
 
     def test_exotic_allowed_when_enabled(self):
-        v = Gates.from_env({"ALC_ENGINE_EXOTIC": "1"}).check("createVehicle")
+        v = Gates.from_env({"A3MCP_ENGINE_EXOTIC": "1"}).check("createVehicle")
         self.assertTrue(v.allowed)
 
     # ------------------------------------------------------------ 硬禁的绝对性
 
     def test_forbidden_never_allowed_even_with_everything_on(self):
         g = Gates.from_env({
-            "ALC_ENGINE_READ": "1", "ALC_ENGINE_WRITE": "1",
-            "ALC_ENGINE_EXOTIC": "1", "ALC_ALLOW_CHEAT": "1",
-            "ALC_INPUT_INJECT": "1",
+            "A3MCP_ENGINE_READ": "1", "A3MCP_ENGINE_WRITE": "1",
+            "A3MCP_ENGINE_EXOTIC": "1", "A3MCP_ALLOW_CHEAT": "1",
+            "A3MCP_INPUT_INJECT": "1",
         })
         for cmd in sorted(FORBIDDEN_EXACT):
             self.assertFalse(g.check(cmd).allowed, f"{cmd} 不该被放行")
@@ -154,14 +206,14 @@ class TestGates(unittest.TestCase):
 
     def test_override_cannot_unlock_forbidden(self):
         """显式白名单也不能解锁硬禁——这是刻意的，避免"留个后门"。"""
-        g = Gates.from_env({"ALC_ALLOW_COMMANDS": "execVM,compile,callExtension",
-                            "ALC_ENGINE_EXOTIC": "1"})
+        g = Gates.from_env({"A3MCP_ALLOW_COMMANDS": "execVM,compile,callExtension",
+                            "A3MCP_ENGINE_EXOTIC": "1"})
         for cmd in ("execVM", "compile", "callExtension"):
             self.assertFalse(g.check(cmd).allowed, f"{cmd} 被 override 放行了")
 
     def test_override_works_for_non_forbidden(self):
-        g = Gates.from_env({"ALC_ALLOW_COMMANDS": "createVehicle",
-                            "ALC_ENGINE_EXOTIC": "0"})
+        g = Gates.from_env({"A3MCP_ALLOW_COMMANDS": "createVehicle",
+                            "A3MCP_ENGINE_EXOTIC": "0"})
         self.assertTrue(g.check("createVehicle").allowed)
 
     def test_reasons_are_human_readable(self):
@@ -171,13 +223,54 @@ class TestGates(unittest.TestCase):
         self.assertIn("硬禁", v2.reason)
 
     def test_snapshot_is_json_serializable(self):
-        snap = Gates.from_env({"ALC_ALLOW_COMMANDS": "foo, bar"}).snapshot()
+        snap = Gates.from_env({"A3MCP_ALLOW_COMMANDS": "foo, bar"}).snapshot()
         json.dumps(snap, ensure_ascii=False)
         self.assertEqual(snap["overrides"], ["bar", "foo"])
 
     def test_forbidden_list_shape(self):
         items = forbidden_list()
         self.assertIn("execvm", items)
+        self.assertTrue(any(i.endswith("*") for i in items), "应含前缀规则")
+        self.assertNotIn("call", items,
+                         "call 已改由 CALL_DENY 与表达式校验把关，不再列在硬禁清单里")
+
+
+class TestCallDeny(unittest.TestCase):
+    """CALL_DENY：被 call 的函数名里，有一类**永远**不能调。
+
+    与硬禁命令的区别在于"把守的位置"：硬禁看命令名，CALL_DENY 看**函数名**。
+    正因如此，它必须能挡住"经 call 绕回 compile"这条路——否则 call_gated
+    就等于把 compile 换个拼写放了进来。
+    """
+
+    def test_exec_family_denied(self):
+        for fn in ("BIS_fnc_execVM", "BIS_fnc_execFSM", "BIS_fnc_spawn",
+                   "BIS_fnc_codePerformance", "BIS_fnc_dbg_remotelyExec",
+                   "BIS_fnc_callSQF", "BIS_fnc_MP"):
+            self.assertIsNotNone(call_denied(fn), f"{fn} 应被 CALL_DENY 拒绝")
+
+    def test_deny_is_case_insensitive_and_ignores_leading_underscore(self):
+        self.assertIsNotNone(call_denied("bis_fnc_execvm"))
+        self.assertIsNotNone(call_denied("_BIS_fnc_execVM"))
+
+    def test_primitive_code_builders_denied(self):
+        """compile/spawn 这些名字本身也要挡：call 它们等于建新代码对象。"""
+        for fn in ("compile", "compileFinal", "spawn", "execVM", "callExtension"):
+            self.assertIsNotNone(call_denied(fn), fn)
+
+    def test_normal_functions_allowed(self):
+        """正常函数不能被误伤——误报会让整条能力被关掉。"""
+        for fn in ("a3mcp_fnc_init", "a3mcp_fnc_validate", "BIS_fnc_help",
+                   "BIS_fnc_selectRandom", "CBA_fnc_addBISEventHandler"):
+            self.assertIsNone(call_denied(fn), f"{fn} 不该被拒绝")
+
+    def test_empty_name_denied(self):
+        self.assertIsNone(call_denied(""))
+        self.assertIsNone(call_denied("   "))
+
+    def test_deny_list_shape(self):
+        items = call_denied_list()
+        self.assertIn("bis_fnc_execvm", items)
         self.assertTrue(any(i.endswith("*") for i in items), "应含前缀规则")
 
 

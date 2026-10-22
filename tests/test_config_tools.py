@@ -20,6 +20,8 @@ import unittest
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
+from adapters.config_tools import glob_match  # noqa: E402
+
 from tests.fake_game import FakeGame  # noqa: E402
 
 
@@ -159,6 +161,36 @@ class McpServer:
             self.proc.kill()
 
 
+def fn_list_handler(msg: dict) -> dict:
+    """模拟 SQF 的 fnList：按 [tag, limit] 返回函数名或 tag 概览。
+
+    结构与游戏侧一致（fn_fnList.sqf）：
+        {"functions": [...], "total": n, "tags": [[tagName, count], ...],
+         "truncated": bool, "tagFilter": "..."}
+    """
+    args = msg.get("args") or []
+    tag = (args[0] if len(args) > 0 and isinstance(args[0], str) else "")
+    limit = args[1] if len(args) > 1 and isinstance(args[1], int) else 200
+    all_tags = [["a3mcp", 3], ["BIS", 2]]
+    if not tag:
+        return {"ok": True, "result": {
+            "functions": [], "total": 5, "tags": all_tags,
+            "truncated": False, "tagFilter": ""}}
+    if tag.lower() == "a3mcp":
+        names = ["a3mcp_fnc_init", "a3mcp_fnc_validate", "a3mcp_fnc_fnList"]
+        return {"ok": True, "result": {
+            "functions": names[:limit], "total": 3, "tags": [["a3mcp", 3]],
+            "truncated": len(names) > limit, "tagFilter": "a3mcp"}}
+    if tag.lower() == "bis":
+        names = ["BIS_fnc_sortBy", "BIS_fnc_arrayShuffle"]
+        return {"ok": True, "result": {
+            "functions": names[:limit], "total": 2, "tags": [["BIS", 2]],
+            "truncated": len(names) > limit, "tagFilter": "bis"}}
+    return {"ok": True, "result": {
+        "functions": [], "total": 0, "tags": [], "truncated": False,
+        "tagFilter": tag}}
+
+
 def text_of(result: dict) -> str:
     return "\n".join(c.get("text", "") for c in result.get("content", []))
 
@@ -167,9 +199,9 @@ class ConfigToolCase(unittest.TestCase):
     def setUp(self):
         self.port = free_port()
         self.srv = McpServer({
-            "ALC_CHANNEL": "tcp", "ALC_TCP_HOST": "127.0.0.1",
-            "ALC_TCP_PORT": str(self.port), "ALC_ENGINE_WRITE": "1",
-            "ALC_AUDIT_LOG": os.path.join(REPO, "audit.jsonl"),
+            "A3MCP_CHANNEL": "tcp", "A3MCP_TCP_HOST": "127.0.0.1",
+            "A3MCP_TCP_PORT": str(self.port), "A3MCP_ENGINE_WRITE": "1",
+            "A3MCP_AUDIT_LOG": os.path.join(REPO, "audit.jsonl"),
         })
         self.srv.request("initialize", {"protocolVersion": "2024-11-05"})
         self.game: FakeGame | None = None
@@ -186,6 +218,7 @@ class ConfigToolCase(unittest.TestCase):
                 self.game = game
                 game.handlers["configQuery"] = config_query_handler
                 game.handlers["configOfEntity"] = config_of_handler
+                game.handlers["fnList"] = fn_list_handler
                 return game
             time.sleep(0.1)
         raise AssertionError("假游戏无法连接")
@@ -287,6 +320,40 @@ class TestConfigSearch(ConfigToolCase):
         result = self.wait_tool("config_search", {"pattern": "zzz_nothing*"})
         self.assertIn("无匹配", text_of(result))
 
+    def test_no_match_points_at_the_real_cause(self):
+        """无匹配时要提示"只搜直接子类，不递归"。
+
+        实测踩到：有人搜 `BUS_Inf*`（root=CfgGroups）得到无匹配，就断定这个工具
+        坏了——其实那个类在 `CfgGroups >> West >> BLU_F >> Infantry` 下，而引擎的
+        `configClasses` 只遍历**直接子类**。无匹配最常见的原因就是搜错了层，
+        所以这句话必须出现在提示里。
+        """
+        self.connect_game()
+        result = self.wait_tool("config_search", {"pattern": "BUS_Inf*",
+                                                  "root": "CfgGroups"})
+        text = text_of(result)
+        self.assertIn("无匹配", text)
+        self.assertIn("直接子类", text)
+        self.assertIn("path", text)
+
+    def test_path_is_passed_through(self):
+        """深层搜索靠 path —— 它必须原样传到游戏侧（斜杠拼接）。"""
+        game = self.connect_game()
+        self.wait_tool("config_search", {"pattern": "*", "root": "CfgGroups",
+                                         "path": ["West", "BLU_F", "Infantry"]})
+        self.assertTrue(game.wait_commands(1))
+        sent = game.commands[-1]["args"]
+        self.assertEqual(sent[0], "CfgGroups")                  # root
+        self.assertEqual(sent[1], "West/BLU_F/Infantry")        # path（斜杠分隔）
+        self.assertEqual(sent[2], "search")                     # op
+
+    def test_reported_location_includes_path(self):
+        """回执要写清"搜的是哪一层"，否则深层搜索的结果无从对账。"""
+        self.connect_game()
+        result = self.wait_tool("config_search", {"pattern": "*", "root": "CfgGroups",
+                                                  "path": ["West"]})
+        self.assertIn("CfgGroups/West", text_of(result))
+
 
 class TestConfigOfEntity(ConfigToolCase):
     def test_found_entity(self):
@@ -386,3 +453,94 @@ class TestPayloadShape(ConfigToolCase):
         self.assertEqual(len(args), 5)
         self.assertEqual(args[3], ["displayName"])
         self.assertIsInstance(args[4], int)
+
+
+class TestGlobMatchContract(unittest.TestCase):
+    """通配符匹配契约：`adapters.config_tools.glob_match` 是 SQF 侧
+    `fn_configQuery::_globMatch` 的参考实现，两者必须等价。
+
+    背景（实测踩到）：SQF 侧旧实现只取第一个 `*` 之前那段做子串包含 ——
+    · `*_F` 这类模式（那段为空）→ **匹配全部类**，有人因此拿到 15604 条无关结果；
+    · `?` 从未实现 → 含 `?` 的模式一条都匹配不到。
+    误报与漏报同时存在，而工具描述却写着"`*` 与 `?` 可用"。
+
+    下面这组用例同时是 SQF 实现的验收清单：上机时抽查同样这几条即可。
+    """
+
+    def test_star_matches_everything(self):
+        self.assertTrue(glob_match("*", "b_mrap_01_f"))
+        self.assertTrue(glob_match("**", "abc"))
+        self.assertTrue(glob_match("*abc*", "abc"))
+
+    def test_prefix_and_suffix(self):
+        self.assertTrue(glob_match("b_mrap*", "b_mrap_01_f"))
+        self.assertFalse(glob_match("b_mrap*", "b_truck_01_f"))
+        self.assertTrue(glob_match("*_f", "b_mrap_01_f"))
+        # ★ 旧实现这里误报（`*` 开头 → 匹配全部）
+        self.assertFalse(glob_match("*_f", "b_truck_01"))
+
+    def test_middle_star(self):
+        self.assertTrue(glob_match("b_*_f", "b_mrap_01_f"))
+        self.assertFalse(glob_match("b_*_f", "b_mrap_01"))
+
+    def test_question_mark_single_char(self):
+        """★ 旧实现完全没实现 `?`，含 `?` 的模式一条都匹配不到。"""
+        self.assertTrue(glob_match("b_?_f", "b_1_f"))
+        self.assertFalse(glob_match("b_?_f", "b_12_f"))
+        self.assertTrue(glob_match("b_mrap_0?_f", "b_mrap_01_f"))
+        # ★ 旧实现这里漏报
+        self.assertTrue(glob_match("b_?rap*", "b_mrap_01_f"))
+
+    def test_edges(self):
+        self.assertTrue(glob_match("", ""))
+        self.assertFalse(glob_match("", "x"))
+        self.assertFalse(glob_match("?", ""))
+        self.assertTrue(glob_match("?*", "a"))
+        self.assertTrue(glob_match("a*c", "abc"))
+        self.assertFalse(glob_match("a*c", "ab"))
+
+    def test_matches_are_case_insensitive_when_lowered(self):
+        """调用方负责小写；这里固定"先 lower 再匹配"的用法。"""
+        self.assertTrue(glob_match("b_mrap*".lower(), "B_MRAP_01_F".lower()))
+
+
+class TestFunctionList(ConfigToolCase):
+    """`function_list`：从 CfgFunctions 现算可调用的函数名（call 的目标来源）。
+
+    规则（实测见 decisions.md D39）：函数名 = <tag> + "_fnc_" + <叶子类名>；
+    tag 取直接子类的 tag 字段，没有该字段时用类名
+    （实测 A3 / A2PMC 的 tag 也都是 "BIS"，Ares 没有该字段）。
+    """
+
+    def test_overview_lists_tags_with_counts(self):
+        """不带 tag：给概览，而不是倾泻几千个函数名。"""
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {}))
+        self.assertIn("CfgFunctions", text)
+        self.assertIn("a3mcp", text)
+        self.assertIn("BIS", text)
+
+    def test_tag_lists_function_names(self):
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {"tag": "a3mcp"}))
+        self.assertIn("a3mcp_fnc_init", text)
+        self.assertIn("a3mcp_fnc_validate", text)
+
+    def test_limit_is_reported_not_silent(self):
+        """截断必须说出来 —— 否则调用方会以为"就这么多"。"""
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {"tag": "a3mcp",
+                                                        "limit": 1}))
+        self.assertIn("只列前 1 个", text)
+
+    def test_unknown_tag_says_so(self):
+        self.connect_game()
+        text = text_of(self.wait_tool("function_list", {"tag": "no_such_tag"}))
+        self.assertIn("没有这个 tag", text)
+
+    def test_cmd_name_matches_sqf_dispatch(self):
+        """下行 cmd 名必须与 fn_exec.sqf 的 case 对上（那边 toLower 后比较）。"""
+        game = self.connect_game()
+        self.wait_tool("function_list", {"tag": "a3mcp"})
+        self.assertTrue(game.wait_commands(1))
+        self.assertEqual(game.commands[-1]["cmd"], "fnList")

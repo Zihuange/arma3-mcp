@@ -56,13 +56,13 @@ INSTRUCTIONS = """\
 
 
 def choose_channel():
-    """按 ALC_CHANNEL 选择执行通道。
+    """按 A3MCP_CHANNEL 选择执行通道。
 
     默认 null：不监听任何端口、exec 明确报"未接通"。
-    ALC_CHANNEL=tcp 时启动 TCP 服务端等待游戏连入；启动失败（如端口被占）
+    A3MCP_CHANNEL=tcp 时启动 TCP 服务端等待游戏连入；启动失败（如端口被占）
     会退回 null 并在通道信息里带上原因，而不是抛异常崩掉服务器。
     """
-    kind = (os.environ.get("ALC_CHANNEL") or "").strip().lower()
+    kind = (os.environ.get("A3MCP_CHANNEL") or "").strip().lower()
     if kind in ("", "null", "none"):
         return adapters.channel_from_env()
     if kind == "tcp":
@@ -116,16 +116,16 @@ def main() -> int:
     """
     argv = sys.argv[1:]
     transport = (_arg_value(argv, "--transport")
-                 or os.environ.get("ALC_TRANSPORT") or "stdio").strip().lower()
+                 or os.environ.get("A3MCP_TRANSPORT") or "stdio").strip().lower()
     reg = build_registry()
 
     if transport in ("stdio", ""):
         return serve(reg, name="arma3-mcp-engine", version="0.1.0",
                      instructions=INSTRUCTIONS)
     if transport == "http":
-        host = _arg_value(argv, "--host") or os.environ.get("ALC_HTTP_HOST") or "0.0.0.0"
+        host = _arg_value(argv, "--host") or os.environ.get("A3MCP_HTTP_HOST") or "0.0.0.0"
         port_text = (_arg_value(argv, "--port")
-                     or os.environ.get("ALC_HTTP_PORT") or "32124")
+                     or os.environ.get("A3MCP_HTTP_PORT") or "32124")
         try:
             port = int(port_text)
         except ValueError:

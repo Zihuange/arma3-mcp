@@ -23,6 +23,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from tests.fake_game import FakeGame, fail_handler, silent_handler  # noqa: E402
+from adapters.exec_tools import expand_placeholders  # noqa: E402
 
 
 def free_port() -> int:
@@ -100,12 +101,12 @@ class ExecE2ECase(unittest.TestCase):
     def setUp(self):
         self.port = free_port()
         self.env = {
-            "ALC_CHANNEL": "tcp",
-            "ALC_TCP_HOST": "127.0.0.1",
-            "ALC_TCP_PORT": str(self.port),
-            "ALC_ENGINE_WRITE": "1",
-            "ALC_ENGINE_EXOTIC": "0",
-            "ALC_AUDIT_LOG": os.path.join(REPO, "audit.jsonl"),
+            "A3MCP_CHANNEL": "tcp",
+            "A3MCP_TCP_HOST": "127.0.0.1",
+            "A3MCP_TCP_PORT": str(self.port),
+            "A3MCP_ENGINE_WRITE": "1",
+            "A3MCP_ENGINE_EXOTIC": "0",
+            "A3MCP_AUDIT_LOG": os.path.join(REPO, "audit.jsonl"),
         }
         self.srv = McpServer(self.env)
         self.srv.request("initialize", {"protocolVersion": "2024-11-05"})
@@ -159,7 +160,12 @@ class TestConnectedFlow(ExecE2ECase):
         self.assertIn("moved", text)
         self.assertTrue(game.wait_commands(1))
         self.assertEqual(game.commands[-1]["cmd"], "exec")
-        self.assertEqual(game.commands[-1]["args"][0], "_p0 setPosATL _p1")
+        # 下发的必须是**展开后**的形态：`_p0` 不是 SQF 变量，原样下发的话引擎会
+        # 报"未定义的变量：_p0"，而回执仍是成功、结果 nil（实测踩过）。
+        self.assertEqual(game.commands[-1]["args"][0],
+                         "(_this select 0) setPosATL (_this select 1)")
+        # 参数以数据原样下发，不被展开逻辑碰到
+        self.assertEqual(game.commands[-1]["args"][1], [["u_17"], [1, 2, 3]])
 
     def test_exec_dry_run_does_not_reach_game(self):
         game = self.connect_game()
@@ -232,6 +238,129 @@ class TestConnectedFlow(ExecE2ECase):
             time.sleep(0.1)
         self.assertIn("evt:killed", text)
         self.assertNotIn("status:alpha", text)
+
+
+class TestCallGateE2E(ExecE2ECase):
+    """`call` 的闭环：闸门 + 目标核对 + 真的不到游戏里去。
+
+    只测 Python 侧不够——**判定发生在服务器进程里**，而这一族最容易出的问题是
+    "校验写对了，但调用链没把数据传下去"，那样闸门就是装饰。所以这里让请求
+    真的走过 MCP 进程、走到假游戏，再看它有没有到。
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.env = dict(self.env, A3MCP_ENGINE_CALL="1")
+        # 默认的 setUp 起的服务器没开 call 闸门，这里换一个开着的
+        self.srv.close()
+        self.srv = McpServer(self.env)
+        self.srv.request("initialize", {"protocolVersion": "2024-11-05"})
+        self.srv.notify("notifications/initialized")
+
+    def test_execvm_via_call_is_rejected_and_never_sent(self):
+        """★ 最重要的一条：BIS_fnc_execVM 经 call 也必须拒，且不能发到游戏。"""
+        game = self.connect_game()
+        result = self.srv.call("exec", {"expr": "_p0 call _p1",
+                                        "args": [["u_1"], "BIS_fnc_execVM"]})
+        text = text_of(result)
+        self.assertTrue(result["isError"], text)
+        self.assertIn("BIS_fnc_execVM", text)
+        time.sleep(0.3)
+        self.assertEqual(len(game.commands), 0,
+                         "被 CALL_DENY 拒绝的调用不该出现在游戏侧")
+
+    def test_deny_family_never_reaches_game(self):
+        """执行类/远程类整族都到不了游戏侧。"""
+        game = self.connect_game()
+        for fn in ("BIS_fnc_execFSM", "BIS_fnc_spawn", "BIS_fnc_dbg_console",
+                   "compile", "spawn", "execVM", "callExtension"):
+            result = self.srv.call("exec", {"expr": "_p0 call _p1",
+                                            "args": [["u_1"], fn]})
+            self.assertTrue(result["isError"], "%s 应被拒绝：%s"
+                            % (fn, text_of(result)))
+        time.sleep(0.3)
+        self.assertEqual(len(game.commands), 0)
+
+    def test_legitimate_call_reaches_game(self):
+        """正常函数要能真的发出去——否则这闸门只是把能力关掉了。"""
+        game = self.connect_game()
+        game.handlers["exec"] = lambda m: {"ok": True, "result": {"ran": True}}
+        result = self.wait_tool("exec", {"expr": "_p0 call _p1",
+                                         "args": [["u_1"], "a3mcp_fnc_validate"]})
+        text = text_of(result)
+        self.assertFalse(result["isError"], text)
+        self.assertTrue(game.wait_commands(1))
+        # 目标函数名走数据、位置保持不变：展开只动占位符，不碰参数数组。
+        # 这条一起守住"展开没把参数挪位"——挪位的话 CALL_DENY 核对的就是别的值了。
+        self.assertEqual(game.commands[-1]["args"][0],
+                         "(_this select 0) call (missionNamespace"
+                         " getVariable (_this select 1))")
+        self.assertEqual(game.commands[-1]["args"][1][1], "a3mcp_fnc_validate")
+
+
+class TestPlaceholderExpansion(unittest.TestCase):
+    """占位符展开的单元测试。
+
+    这是**曾经整条链路失效**的地方：`_p0` 不是 SQF 变量，原样下发必然在引擎里
+    报"未定义的变量：_p0"，而回执仍报成功、结果 nil —— 调用方看到的是"成功地
+    什么都没做"。无参表达式不受影响，所以只用无参命令的测试发现不了。
+
+    展开只认"独立成词"的 `_pN`，边界用例与正向用例同等重要：误替换会把正常
+    标识符切坏，那比不展开更难查。
+    """
+
+    def test_basic_expansion(self):
+        self.assertEqual(expand_placeholders("_p0 setPosATL _p1", 2),
+                         "(_this select 0) setPosATL (_this select 1)")
+
+    def test_single_and_no_arg(self):
+        self.assertEqual(expand_placeholders("getPos _p0", 1),
+                         "getPos (_this select 0)")
+        self.assertEqual(expand_placeholders("worldName", 0), "worldName")
+
+    def test_call_form(self):
+        """call 的目标要包一层 getVariable。
+
+        引擎要求 call 的右操作数**编译期可确定**：直接给 `(_this select 1)`
+        会被拒（实测 `Error position: <call (_this select 1)>`）。所以展开时
+        先经 getVariable 把函数取回来——函数名仍只是数据，没被编译成代码。
+        """
+        self.assertEqual(
+            expand_placeholders("_p0 call _p1", 2),
+            "(_this select 0) call (missionNamespace getVariable (_this select 1))")
+
+    def test_multi_digit_index(self):
+        self.assertEqual(expand_placeholders("_p0 + _p10", 11),
+                         "(_this select 0) + (_this select 10)")
+
+    def test_word_boundaries_not_touched(self):
+        """形近但非占位符的标识符不能被切开。"""
+        for src in ("_p0abc", "_plimit", "_p_0", "x_p0", "a_p0b"):
+            self.assertEqual(expand_placeholders(src, 4), src, src)
+
+    def test_out_of_range_left_alone(self):
+        """越界下标原样保留：那是校验器该拦的，展开不该悄悄改语义。"""
+        self.assertEqual(expand_placeholders("_p0", 0), "_p0")
+        self.assertEqual(expand_placeholders("_p3", 2), "_p3")
+
+    def test_repeated_placeholder(self):
+        self.assertEqual(expand_placeholders("_p0 + _p0", 1),
+                         "(_this select 0) + (_this select 0)")
+
+
+class TestCallGateClosedE2E(ExecE2ECase):
+    """闸门关着时（默认）call 必须被拒——这是本档默认值的一部分。"""
+
+    def test_call_rejected_when_gate_closed(self):
+        game = self.connect_game()
+        result = self.srv.call("exec", {"expr": "_p0 call _p1",
+                                        "args": [["u_1"], "a3mcp_fnc_init"]})
+        text = text_of(result)
+        self.assertTrue(result["isError"], text)
+        # 报错要指向开关，而不是让人反复改表达式
+        self.assertIn("A3MCP_ENGINE_CALL", text)
+        time.sleep(0.3)
+        self.assertEqual(len(game.commands), 0)
 
 
 class TestDisconnectedFlow(ExecE2ECase):

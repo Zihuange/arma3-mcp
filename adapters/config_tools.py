@@ -72,6 +72,39 @@ KEY_PRESETS = {
 DEFAULT_PRESET = ["displayName", "scope", "class"]
 
 
+def glob_match(pattern: str, name: str) -> bool:
+    """通配符匹配：`*` 任意串、`?` 单字符。两端都应已小写。
+
+    这是 **SQF 侧 `fn_configQuery::_globMatch` 的参考实现**——两处必须等价。
+    为此这个算法写成"双指针 + 星号回溯"的显式形式（不用 `fnmatch`），
+    与 SQF 里能写出来的结构一一对应；改一边就要同步改另一边。
+
+    为什么值得单独写：SQF 侧旧实现只取第一个 `*` 之前那段做子串包含，于是
+    · 模式以 `*` 开头（如 `*_F`）→ 那段为空 → **匹配全部类**（实测有人因此拿到
+      15604 条无关结果）；
+    · `?` 从未实现 → 含 `?` 的模式**一条都匹配不到**。
+    误报与漏报同时存在。现在两端都用标准 glob。
+    """
+    p = n = 0
+    star_p = star_n = -1
+    while n < len(name):
+        if p < len(pattern) and (pattern[p] == "?" or pattern[p] == name[n]):
+            p += 1
+            n += 1
+        elif p < len(pattern) and pattern[p] == "*":
+            star_p, star_n = p, n
+            p += 1
+        elif star_p >= 0:
+            star_n += 1
+            n = star_n
+            p = star_p + 1
+        else:
+            return False
+    while p < len(pattern) and pattern[p] == "*":
+        p += 1
+    return p == len(pattern)
+
+
 def _cache_key(root: str, path: list[str], extra: str = "") -> str:
     return "%s|%s|%s" % (root, "/".join(path), extra)
 
@@ -352,14 +385,21 @@ def register(reg: Registry, chan: Channel, tools: ConfigTools) -> None:
     @reg.tool(
         name="config_search",
         description=("按通配符搜索 config 类名（不区分大小写），如 \"B_MRAP*\"。"
-                     "用于「我想找某类东西，但不知道确切类名」——比在命令行里"
-                     "逐层 config_tree 快得多。"),
+                     "`*`=任意串、`?`=单字符（如 `*_F`、`B_?_F`）；想列全部用 `*`。"
+                     "⚠ **只搜指定层的直接子类，不递归**（引擎的 configClasses "
+                     "就是这个语义）。要找深层的类，用 path 把层指定到那里，"
+                     "如 root=CfgGroups path=[\"West\",\"BLU_F\",\"Infantry\"] "
+                     "配 pattern=\"*\"; 不清楚层级时先用 config_tree 逐层下钻。"),
         input_schema={
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "minLength": 1,
                             "description": "通配符，* 与 ? 可用"},
-                "root": {"type": "string", "description": "限定在某顶层类内搜索"},
+                "root": {"type": "string",
+                         "description": "顶层类，默认 CfgVehicles"},
+                "path": {"type": "array", "items": {"type": "string"},
+                         "description": "从 root 往下的层路径，如 [\"West\",\"BLU_F\"]。"
+                                        "不填=只搜 root 的直接子类（不递归）"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200},
             },
             "required": ["pattern"],
@@ -368,18 +408,94 @@ def register(reg: Registry, chan: Channel, tools: ConfigTools) -> None:
     )
     def _search(args: dict) -> ToolResult:
         root = args.get("root") or "CfgVehicles"
+        path = args.get("path") or []
         ok, data, error = tools.query(
-            root, [], op="search", keys=[args["pattern"]],
+            root, path, op="search", keys=[args["pattern"]],
             limit=args.get("limit", 50))
         if not ok:
             return ToolResult.fail("config 搜索失败：%s" % error)
         matches = data.get("matches") or []
+        total = data.get("total", len(matches))
+        # 二次过滤：匹配规则的权威实现在游戏侧（SQF，遍历子树时顺手判掉），
+        # 但若游戏侧跑的是旧版本（把 `*` 开头的模式当"匹配全部"），这里能挡住
+        # 那批误报——宁可结果少，也不要把 15000 条无关类名倾泻给调用方。
+        pat = args["pattern"].lower()
+        filtered = [m for m in matches if glob_match(pat, m.lower())]
+        if len(filtered) != len(matches):
+            total = len(filtered)
+        matches = filtered
+        where = "/".join([root] + list(path))
         lines = ["在 %s 中匹配 %r：%d 个"
-                 % (root, args["pattern"], data.get("total", len(matches))), ""]
+                 % (where, args["pattern"], total), ""]
         for name in matches:
             lines.append("  %s" % name)
         if not matches:
-            lines.append("  （无匹配。换个模式，或先用 config_tree 看看有哪些子类。）")
+            # 无匹配时给出**最可能的那个原因**：搜索范围是"该层的直接子类"，
+            # 而调用方常常以为它递归。实测有人搜 `BUS_Inf*`（root=CfgGroups）
+            # 得到"无匹配"就断定工具坏了——实际那个类在更深一层里。
+            lines.append("  （无匹配。搜索只覆盖 **%s 的直接子类**，不递归——"
+                         "若目标可能在更深层，用 path 把层指定过去"
+                         "（path=[\"West\",\"BLU_F\",\"Infantry\"] 这种），"
+                         "或先用 config_tree 逐层下钻看清结构。）" % where)
+        return ToolResult.ok("\n".join(lines), data)
+
+    @reg.tool(
+        name="function_list",
+        description=("列出**可调用的函数名**（从游戏内 CfgFunctions 现算）——"
+                     "`call` 的目标核对用的就是这份来源。"
+                     "不带 tag：返回各 tag 的名字与函数数（概览）；"
+                     "带上 tag（如 `a3mcp` / `BIS`）：列出该 tag 的函数名。"
+                     "函数名形如 `<tag>_fnc_<叶子类名>`，可**直接**用作 call 的目标"
+                     "（查询大小写不敏感）。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "tag": {"type": "string",
+                        "description": "只要某个 tag 的函数，如 a3mcp / BIS；"
+                                       "省略则返回全部 tag 的概览"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000,
+                          "description": "函数名最多返回多少条（默认 200）"},
+            },
+        },
+        phase="config",
+    )
+    def _fn_list(args: dict) -> ToolResult:
+        reply = tools.chan.send({
+            "cmd": "fnList",
+            "args": [args.get("tag") or "", args.get("limit", 200)]})
+        audit("function_list", {"tag": args.get("tag"), "ok": reply.ok})
+        if not reply.ok:
+            return ToolResult.fail("列函数失败：%s" % reply.error)
+        # 约定：reply.result 就是负载，外面没有 ok 包装
+        data = reply.result or {}
+        funcs = data.get("functions") or []
+        tags = data.get("tags") or []
+        total = data.get("total", 0)
+        tag = (args.get("tag") or "").strip()
+
+        lines = []
+        if tag:
+            head = "tag %s 下共 %d 个函数" % (tag, total)
+            if data.get("truncated") and len(funcs) < total:
+                head += "（只列前 %d 个）" % len(funcs)
+            lines.append(head)
+            lines.append("")
+            lines.extend("  %s" % n for n in funcs)
+            if not funcs:
+                lines.append("  （没有这个 tag。不带 tag 调用可看全部 tag。）")
+        else:
+            lines.append("CfgFunctions 里共 %d 个函数，分布在 %d 个 tag："
+                         % (total, len(tags)))
+            lines.append("")
+            for item in tags:
+                # 游戏侧给的是 [tagName, count] 二元组
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    lines.append("  %-24s %s 个" % (item[0], item[1]))
+                else:
+                    lines.append("  %s" % (item,))
+            lines.append("")
+            lines.append("要列某个 tag 的函数名，带上 tag 参数（如 tag=\"a3mcp\"）——"
+                         "那些名字可直接用作 call 的目标。")
         return ToolResult.ok("\n".join(lines), data)
 
     @reg.tool(

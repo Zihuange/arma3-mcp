@@ -23,7 +23,7 @@ MCP 面很小：`initialize` / `tools/list` / `tools/call` / 通知收尾。
 ## D2 硬禁命令不接受任何开关
 
 **决定**：`execVM`/`compile`/`call`/`callExtension`/`loadFile`/`remoteExec` 等
-一律拒绝，`ALC_ALLOW_COMMANDS` 显式白名单也放不开。
+一律拒绝，`A3MCP_ALLOW_COMMANDS` 显式白名单也放不开。
 
 **理由**：MCP 工具的参数来自 LLM。一旦命令名可以来自任意字符串，本仓库全部的
 类型校验、参数校验、风险分级都会退化为装饰——安全模型会从"结构化调用"塌回
@@ -151,7 +151,7 @@ MCP 面很小：`initialize` / `tools/list` / `tools/call` / 通知收尾。
 
 **代价与缓解**：
 - 服务端必须监听 `0.0.0.0`（只绑 `127.0.0.1` 则 Windows 连不进来）；
-- 缓解：协议里有 token 握手（默认 `arma3-mcp-local`，可配 `ALC_TCP_TOKEN`），
+- 缓解：协议里有 token 握手（默认 `arma3-mcp-local`，可配 `A3MCP_TCP_TOKEN`），
   且 WSL2 NAT 本身不把该端口暴露给局域网；
 - 真实 DLL 上机时需再确认一次 Windows 防火墙是否放行（连出方向通常无碍）。
 
@@ -183,7 +183,7 @@ MCP 面很小：`initialize` / `tools/list` / `tools/call` / 通知收尾。
    → 这类差异只有真在目标平台跑测试才会暴露，靠读文档想不到。
 
 **为什么不干脆两边都支持**：现在是两边都支持（代码跨平台、测试两平台全绿），
-只是**部署位置**选了 Windows。若哪天要在 WSL 侧部署，`ALC_CHANNEL=tcp` 配 D12 的
+只是**部署位置**选了 Windows。若哪天要在 WSL 侧部署，`A3MCP_CHANNEL=tcp` 配 D12 的
 方向即可，无需改代码。
 
 **验证**：`tools/verify_windows.py` —— 一条命令自检 Windows 侧环境
@@ -1018,3 +1018,218 @@ WidgetNone / WidgetCoord / WidgetArea / Widget x1
 
 因此 `Transformation Widget` 的轴拖动、`Scaling`、`Vertical Mode` 三项**仍记为未测**，
 不能因为拿到了坐标就当作测过了。
+
+---
+
+## D37 `call` 移出硬禁：判据从"命令危不危险"改成"参数能不能结构化校验"
+
+方案标题是"独立性整改 + 安全模型：把 `call` 从硬禁改为结构化白名单"。
+实施前按流程先实测，期间**推翻过一次我自己的推断**，记在最前面。
+
+### 我先推错了什么
+
+读 `cmd_info` 的摘要时看到 `call` 的形式 1/2 的参数类型都是 `Code`，于是判断
+"要么有 code、要么 call 没意义"，正准备把方案原文（"call 的参数是函数引用，
+可以来自已知表"）作为错误结论驳回。
+
+**错在只看类型名、没读全那行描述。** 离线命令库的原文是：
+
+```
+1) call code
+   - code : Code  — Compiled instructions. In  this command also accepts datatype String
+```
+
+"also accepts datatype String" —— 字符串形态是官方认可的。命令库摘要里类型缩写
+成 `Code`，把这条限定条件吞掉了。**教训：命令库的类型栏是提要，限定条件在说明
+正文里；要判断"某个形态能不能用"，必须读全**。
+
+### 实测数据（2026-09-27，编辑器 + Stratis）
+
+| 探针 | 结果 |
+|---|---|
+| `worldName` | `Stratis` —— 确认执行器在任务里跑（不是主菜单） |
+| `config_tree root=CfgFunctions` | **49 个顶层类**，含 `a3mcp`、`BIS`、`CBA`、`Ares` |
+| `allVariables missionNamespace` | 函数以**全小写**名字存在于命名空间（`bis_fnc_loop`、`cba_fnc_vectadd`），总数 2991 |
+| `_p0 call _p1`（改前） | 被 `DENY_NAMES` 拒绝 —— 这是**表达式校验**拦的，不是语法错 |
+| `isNil { missionNamespace getVariable "cba_fnc_vectadd" }` | 返回 `true`，**不可用于判断函数是否存在**（对任意值都为真） |
+
+`CfgFunctions` 可枚举这一条很重要：D20 只证明了"主菜单下未编译"，没测过任务里。
+现在可以确认**任务/编辑器里能枚举**，`function_list` 这类能力有落地基础。
+
+### 决定
+
+1. **`call` 移出 `FORBIDDEN_EXACT`，新增 `call_gated` 级**，由 `A3MCP_ENGINE_CALL`
+   控制（默认关）。
+2. **新增 `CALL_DENY`**（`guard/gates.py`）：`bis_fnc_exec*` / `bis_fnc_spawn` /
+   `bis_fnc_dbg_*` / `bis_fnc_codePerformance` / `bis_fnc_callSQF` / `bis_fnc_MP`，
+   以及 `compile` / `spawn` / `execVM` / `callExtension` / `remoteExec*` 这些名字本身。
+   它们把字符串编译成代码，**call 它们等于把 call 变回 compile**。
+3. **`CALL_DENY` 优先级高于白名单**。`A3MCP_ALLOW_COMMANDS` 放不开它——
+   包括 `A3MCP_ALLOW_COMMANDS=call` 这种写法（它有专门用例守着）。
+4. **目标必须走数据**。表达式禁止字符串字面量，所以函数名只能是
+   `_p0 call _p1` 里的 `_p1`。写进表达式文本 → 拒绝。
+5. **纵深防御同步**：`fn_validate.sqf` 独立实现同一份拒绝清单（不共用代码，
+   两边同时漏才算漏）。为此给 `fn_validate` 加了第 4 个参数（实参表）——
+   函数名在数据里，不看数据无法核对。
+
+### 一处实现细节值得记下
+
+`_CALL_TARGET_RE.match(42)` 抛的是 **TypeError 而不是返回 False**。调用方只捕获
+`ExprError`，于是那个 TypeError 会一路冒到 MCP 工具层，变成一条与安全无关的内部
+错误。是测试（传数字那个用例）把它抓出来的——**"类型先显式判断，再交给正则"**
+这条本该写在代码里，而不是等测试来发现。
+
+### 尚未验证（诚实记录）
+
+- `_p0 call _p1` 在**真引擎**里调用一个已编译函数（如 `a3mcp_fnc_validate`）
+  还没跑过 —— 需要重新打包 PBO 并重启游戏。
+- 上述闭环的 Python 侧已由 `tests/test_exec_e2e.py::TestCallGateE2E` 覆盖
+  （4 条，含"execVM 不得到达游戏侧"）。
+- `function_list`（方案里点名的第 27 个工具）**未实现**：CfgFunctions 可枚举已
+  实测，但函数名的拼接要按 `<tag>_fnc_<className>` 遍历子树，还没写。
+
+---
+
+## D38 带参表达式从来没生效过：`_p0` 不是 SQF 变量
+
+这一条是**在真引擎验证 `call` 的过程中撞出来的**，而且它比 `call` 本身更严重。
+
+### 症状与发现过程
+
+测 `_p0 call _p1` 时它超时，查 RPT 看到：
+
+```
+Error in expression <_p0 call _p1>
+Error 表达式中未定义的变量：_p0
+```
+
+顺着查下去发现**凡是带参数的表达式都这样**，而**无参表达式一切正常**：
+
+| 表达式 | 实测结果 |
+|---|---|
+| `worldName` | `"Stratis"` ✅ |
+| `count allUnits` | `0` ✅ |
+| `getPos _p0` | `nil` ❌ |
+| `_p0 setPosATL _p1` | `nil` ❌ |
+
+关键点：**失败是静默的**——执行器仍回 `ok=true`，结果 `nil`。调用方看到的是
+"成功地什么都没做"。项目此前所有"exec 跑通"的验证用的都是无参命令，所以这个
+缺口一直没暴露。
+
+### 根因
+
+`_p0` 是**我们自己引入的占位符约定**，不是 SQF 语法。引擎里没有任何东西把
+`_p0` 绑到实参上；`fn_run` 把原表达式 `compile` 之后就执行了，于是引擎报
+"未定义的变量"。
+
+### 决定
+
+在 **MCP 侧**展开成 `(_this select N)`：`_this` 正是 `fn_run` 里
+`_resolved call _code` 传给被调代码的实参数组。
+
+为什么放 MCP 侧而不是 SQF 侧：SQF 侧也写了一版（同样的字符串扫描），
+引擎里跑出来是 `raw=typeName _p0 -> typeName _p0`——即那个实现没识别出占位符。
+不追究它为什么（成本更高、收益更低），只保留**一处实现**，放在能用测试
+逐条覆盖的那一侧。展开规则有 11 条离线用例，含误替换边界
+（`_p0abc` / `_plimit` / `x_p0` / `_p_0` / 越界下标）。
+
+### 顺带打通了 `call` 的真引擎执行
+
+`call` 的右操作数**必须编译期可确定**：`call (_this select 1)` 被引擎直接拒
+（`Error position: <call (_this select 1)>`）。改为先经 getVariable 取回函数：
+
+```
+(_this select 0) call (missionNamespace getVariable (_this select 1))
+```
+
+函数名仍然是**数据**，没有被编译成代码。实测结果：
+
+| 调用 | 结果 |
+|---|---|
+| `a3mcp_fnc_resolve` | `"u_1"` —— 参数真的传进函数了 |
+| `a3mcp_fnc_validate` | `[true, ["worldname"], ""]` —— 函数执行并返回 |
+| `BIS_fnc_execVM` | 拒绝（CALL_DENY，优先级高于白名单） |
+
+命令库把 `call code` 的 code 参数注明 "also accepts datatype String"，字符串形态
+是官方认可的；而 `missionNamespace getVariable "名字"` 能取到 CODE 类型。
+
+**后续纠正（2026-10-09，实测）**：本条原写"名字必须全小写"，**那是错的**。
+函数名**大小写不敏感**——`a3mcp_fnc_configQuery`（驼峰）、`a3mcp_fnc_configquery`
+（全小写）都能取到 CODE。当初得出"必须小写"的结论，用的是**执行器还没启动时**
+的测试（那时所有 `getVariable` 都返回 nil，与大小写无关）。
+`allVariables` 里显示全小写只是它的存储形式，不是查询要求。
+
+教训与前面那次"只看类型栏不看说明正文"同源：**结论要建立在有效实验上**——
+执行器没跑时的 nil 不代表"这个名字取不到"。
+
+### 代价：为"两处实现漂移"重启了七次游戏
+
+这一轮最贵的不是任何单个 bug，而是**SQF 侧与 MCP 侧各有一份实现、两边悄悄不一致**：
+
+1. SQF 的 `_splitExpr` 把括号留成 token，MCP 的 `re.split` 丢弃括号 →
+   `call (missionNamespace …)` 的目标位置偏移，SQF 报"形态无法识别"。
+   这个报错**看起来像安全策略在正常拒绝**，最容易被当成"安全生效了"。
+2. 我给 SQF 白名单 `pushBackUnique "_this"`，把这个列表从"空"变成"非空"，
+   **意外启用了全量白名单校验**（该侧的语义是"空 = 只挡禁区"）→ 全部命令被拒。
+   名单的"空/非空"是**有意的开关**，不能当集合用。
+
+**落进代码的教训**：切分规则改为只有一处定义（`knowledge/expr.py::split_tokens`），
+SQF 侧照它实现并写明等价关系；同时把 SQF 的 `_targetSlotOf` 用 Python 照抄一份
+放进测试（`TestSqfCallTargetContract`），**以后改那段 SQF 先跑离线用例，对不上就不上机**。
+
+### 还有一处同源缺陷：SQF 侧第二道防线从未生效
+
+`fn_validate` 在**加载期**就报"缺少 ;"——写成了
+`if (cond) then { exitWith {…}; };`，引擎要的是单语句形式 `if (cond) exitWith {…};`。
+后果：该函数全程返回 `nil`，而 `fn_run` 里的 `!(_v select 0)` 出错后**不阻断执行**，
+于是**校验被整个跳过**，没人发现（回执照样 ok=true）。SQFLint 不报这一条。
+
+同源的小坑还有两个，都是"校验器认不出自己人的合法输出"：
+展开形态的 `_this`/`select` 不在白名单、下标 `0`/`1` 被当成标识符。
+
+---
+
+## D39 `function_list` 的前提实测：函数名的拼接规则
+
+D37 把 `function_list` 列为"前提已成立但未实现"，指的是 `CfgFunctions` 可枚举。
+真正要落地还差**拼接规则**——而那不能靠推断（D20 的教训）。本次上机逐条实测：
+
+### 规则（实测确认）
+
+```
+函数名 = <tag> + "_fnc_" + <叶子类名>
+
+CfgFunctions
+  └── <T>            ← 直接子类，**在这里读 tag 字段**
+        └── <C>      ← 二级分类（如 Core、Arrays），**不进名字**
+              └── <F> ← 函数类名，进名字
+```
+
+| 实测项 | 结果 |
+|---|---|
+| `CfgFunctions >> a3mcp >> tag` | `a3mcp` |
+| `a3mcp` 下结构 | 只有 1 个分类 `Core`，其下 **22 个**函数类（与 `.sqf` 文件数一致） |
+| 类名大小写 | **保留原样**（`configQuery`、`jsonParse`、`ackName`…） |
+| `CfgFunctions >> BIS >> tag` | `BIS` |
+| **`A3` / `A2PMC` 的 tag** | 也是 **`BIS`**（不是"缺失"，它们的函数同样叫 `BIS_fnc_*`） |
+| `Ares` 的 tag | **不存在** → 此时用**类名**当 tag（`Ares_fnc_*`） |
+| `A3` 下的结构 | 59 个分类（Actions/Ambient/Arrays/…），函数在第三层 |
+
+### 端到端验证（拼出的名字能否真的 cast 到函数）
+
+| 拼出的名字 | `typeName (missionNamespace getVariable …)` |
+|---|---|
+| `BIS_fnc_sortBy`（来自 `A3 >> Arrays >> sortBy`） | **CODE** |
+| `BIS_fnc_arrayShuffle`（同上） | **CODE** |
+| `BIS_fnc_findInPairs`（同上） | **CODE** |
+| `a3mcp_fnc_uiQuery` / `a3mcp_fnc_cfgValue` | **CODE** |
+| `BIS_fnc_noSuchFunction`（故意拼错，对照） | `nil` |
+
+对照成立，说明拼接规则正确，而不是"随便拼都能中"。
+
+### 顺带纠正一个错误结论
+
+D38 曾写"名字必须全小写"。**错**：函数名大小写**不敏感**，
+`a3mcp_fnc_configQuery`（驼峰）与全小写都能取到 CODE。当初的结论来自
+**执行器尚未启动时**的测试（那时一切 `getVariable` 都是 nil）。
+已在 D38 就地纠正——结论必须建立在有效实验上。

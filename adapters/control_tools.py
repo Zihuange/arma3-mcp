@@ -22,6 +22,7 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
         zh = {
             "engine_read": "只读查询", "engine_write": "改变游戏世界",
             "engine_exotic": "凭空生成资源/网络协调/调试后门",
+            "engine_call": "call（有条件放行：目标函数名还要过 CALL_DENY）",
             "ui_control": "UI 控件操作", "input_inject": "原生输入注入",
             "input_foreground_only": "仅前台注入", "allow_input_text": "文本输入",
             "allow_cheat": "调试/作弊命令",
@@ -52,6 +53,12 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
         lines.append("")
         lines.append(f"硬禁命令 {len(forbidden_list())} 条（任何开关都放不开）："
                      + "、".join(forbidden_list()[:8]) + " …")
+        # call 的目标清单与硬禁清单是**两件事**，必须分开显示：前者管"被调用的
+        # 函数名"，后者管"命令名"。合在一起会让人以为 call 仍被硬禁。
+        from guard.gates import call_denied_list
+        lines.append(f"call 拒绝清单 {len(call_denied_list())} 条"
+                     f"（开了 A3MCP_ENGINE_CALL 也调不了）："
+                     + "、".join(call_denied_list()[:6]) + " …")
         # 运行环境：同一套代码可能跑在 WSL 或 Windows 侧，出问题时第一个要回答的
         # 就是"我现在连的是哪一个实例"
         import platform
@@ -60,7 +67,7 @@ def register(reg: Registry, gu, chan) -> None:  # noqa: ANN001
             "python": _sys.version.split()[0],
             "platform": platform.platform(),
             "executable": _sys.executable,
-            "audit_log": __import__("os").environ.get("ALC_AUDIT_LOG") or "(未设置)",
+            "audit_log": __import__("os").environ.get("A3MCP_AUDIT_LOG") or "(未设置)",
         }
         lines.append("")
         lines.append(f"运行环境：Python {env['python']}　{env['platform']}")

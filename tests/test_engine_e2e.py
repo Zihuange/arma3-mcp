@@ -234,7 +234,7 @@ class TestEngineServerE2E(unittest.TestCase):
     def test_cmd_gate_explains(self):
         text = text_of(self.srv.call("cmd_gate", {"cmd": "attrit"}))
         self.assertIn("拒绝", text)
-        self.assertIn("ALC_ALLOW_CHEAT", text)
+        self.assertIn("A3MCP_ALLOW_CHEAT", text)
 
     # ------------------------------------------------------------ 健壮性
 
@@ -266,7 +266,7 @@ class TestChannelSelection(unittest.TestCase):
 
     def test_unknown_channel_type_reports_reason(self):
         from adapters import channel_from_env
-        chan = channel_from_env({"ALC_CHANNEL": "carrier-pigeon"})
+        chan = channel_from_env({"A3MCP_CHANNEL": "carrier-pigeon"})
         self.assertFalse(chan.connected())
         self.assertIn("carrier-pigeon", chan.info()["reason"])
 

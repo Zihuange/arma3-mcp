@@ -90,8 +90,8 @@ def main():
     # TCP 通道在本机回环上可用（这才是 Windows 侧运行的意义）
     port = _free_port()
     env2 = dict(env)
-    env2.update({"ALC_CHANNEL": "tcp", "ALC_TCP_HOST": "127.0.0.1",
-                 "ALC_TCP_PORT": str(port), "ALC_ENGINE_WRITE": "1"})
+    env2.update({"A3MCP_CHANNEL": "tcp", "A3MCP_TCP_HOST": "127.0.0.1",
+                 "A3MCP_TCP_PORT": str(port), "A3MCP_ENGINE_WRITE": "1"})
     proc2 = subprocess.Popen([sys.executable, "-m", "servers.engine"], cwd=HERE,
                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, env=env2)

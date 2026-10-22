@@ -35,12 +35,12 @@ python3 tools/check_independence.py
         args: ['-m', 'servers.engine']
         cwd: <repo>
         env:
-          ALC_ENGINE_READ: '1'
-          ALC_ENGINE_WRITE: '1'
-          ALC_ENGINE_EXOTIC: '0'
-          ALC_INPUT_INJECT: '0'
-          ALC_UI_CONTROL: '1'
-          ALC_AUDIT_LOG: <repo>/audit.jsonl
+          A3MCP_ENGINE_READ: '1'
+          A3MCP_ENGINE_WRITE: '1'
+          A3MCP_ENGINE_EXOTIC: '0'
+          A3MCP_INPUT_INJECT: '0'
+          A3MCP_UI_CONTROL: '1'
+          A3MCP_AUDIT_LOG: <repo>/audit.jsonl
         toolCallTimeoutMs: 30000
         failOnStartupError: false
 ```
@@ -62,7 +62,7 @@ python3 tools/check_independence.py
 确认服务器能被拉起并列出工具：
 
 ```bash
-cd /tmp && env -i ALC_ENGINE_WRITE=1 /usr/bin/python3 -m servers.engine  # 需 cwd 指向仓库
+cd /tmp && env -i A3MCP_ENGINE_WRITE=1 /usr/bin/python3 -m servers.engine  # 需 cwd 指向仓库
 ```
 （`env -i` 模拟"没有 PATH"的清洗环境；能起来说明启动条件不依赖交互 shell 的环境。）
 
@@ -73,17 +73,19 @@ cd /tmp && env -i ALC_ENGINE_WRITE=1 /usr/bin/python3 -m servers.engine  # 需 c
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
-| `ALC_ENGINE_READ` | `1` | 只读查询 |
-| `ALC_ENGINE_WRITE` | `1` | 改变游戏世界 |
-| `ALC_ENGINE_EXOTIC` | `0` | 生成资源 / 网络协调 / 调试后门 |
-| `ALC_ALLOW_CHEAT` | `0` | 调试类命令（`attrit` 等）单独开关 |
-| `ALC_ALLOW_COMMANDS` | 空 | 显式放行的命令名（逗号分隔，**解不开硬禁**） |
-| `ALC_UI_CONTROL` | `1` | UI 控件操作 |
-| `ALC_INPUT_INJECT` | `0` | 原生输入注入 |
-| `ALC_INPUT_FOREGROUND_ONLY` | `1` | 仅前台注入 |
-| `ALC_INPUT_TEXT` | `1` | 文本输入（不支持输入法） |
-| `ALC_CHANNEL` | `null` | 执行通道类型（P1 起支持 `pipe` / `tcp`） |
-| `ALC_AUDIT_LOG` | 空 | 审计 JSONL 落点 |
+| `A3MCP_ENGINE_READ` | `1` | 只读查询 |
+| `A3MCP_ENGINE_WRITE` | `1` | 改变游戏世界 |
+| `A3MCP_ENGINE_EXOTIC` | `0` | 生成资源 / 网络协调 / 调试后门 |
+| `A3MCP_ENGINE_CALL` | `0` | `call`（有条件放行：目标函数名仍要过 `CALL_DENY`） |
+| `A3MCP_PROFILE` | 空 | 设成 `debug` 时**只**打开 `EXOTIC` 与 `ENGINE_CALL` 的默认值；不动写闸门与输入注入，也解不开硬禁 |
+| `A3MCP_ALLOW_CHEAT` | `0` | 调试类命令（`attrit` 等）单独开关 |
+| `A3MCP_ALLOW_COMMANDS` | 空 | 显式放行的命令名（逗号分隔，**解不开硬禁，也放不开 `call`**） |
+| `A3MCP_UI_CONTROL` | `1` | UI 控件操作 |
+| `A3MCP_INPUT_INJECT` | `0` | 原生输入注入 |
+| `A3MCP_INPUT_FOREGROUND_ONLY` | `1` | 仅前台注入 |
+| `A3MCP_INPUT_TEXT` | `1` | 文本输入（不支持输入法） |
+| `A3MCP_CHANNEL` | `null` | 执行通道类型（P1 起支持 `pipe` / `tcp`） |
+| `A3MCP_AUDIT_LOG` | 空 | 审计 JSONL 落点 |
 | `ARMA3_MCP_CMD_SOURCE` | 空 | 命令定义来源路径（覆盖自动探测） |
 
 ## 方式二：Windows 侧手动启动 + HTTP 传输（推荐用于本机单机）

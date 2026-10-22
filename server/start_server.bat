@@ -18,8 +18,13 @@ rem will knock a running client off.
 setlocal
 set "GAME=H:\SteamLibrary\steamapps\common\Arma 3\arma3server_x64.exe"
 set "WS=H:\SteamLibrary\steamapps\common\Arma 3\!Workshop"
-set "HERE=<repo>\server"
-set "MODS=%WS%\@CBA_A3;<repo>\game\mod"
+rem Self-locating: %~dp0 is this script's folder (server\), so the repo can be
+rem moved or renamed without editing anything here. MODDIR walks up one level
+rem to the mod that lives at the repo root.
+set "HERE=%~dp0"
+set "HERE=%HERE:~0,-1%"
+set "MODDIR=%~dp0..\game\mod"
+set "MODS=%WS%\@CBA_A3;%MODDIR%"
 set "PORT=2302"
 
 if not exist "%GAME%" (

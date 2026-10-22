@@ -113,6 +113,59 @@ def check_code_references() -> list[str]:
     return problems
 
 
+# 借外部项目的名字当自己的标识符前缀 —— 比路径引用**更隐蔽**的依赖痕迹。
+#
+# check_code_references 只查路径与 import，查不出 `ALC_ENGINE_READ` 这种写法：
+# 它不 import 任何东西、也不指向任何路径，但读代码的人会以为必须同时装
+# arma_llm_commander 才能用。实测漏过一次（19 个环境变量全用着别家的前缀）。
+OTHER_REPO_ABBREVS = {
+    "arma_llm_commander": "alc",
+    "arma3-sqf-skill": "asqfs",
+    "arma3-terrain-grid": "atg",
+}
+
+# 允许出现的位置：**说明来源**的文档（它们的职责就是记录参考了什么），
+# 以及本脚本（它定义禁令，必须写出这些名字）。
+#
+# handoff.md 也在其中：它的职责是告诉下一个会话"哪些旧名字已被禁"，因此
+# 必须能写出旧名字。禁掉它等于让交接文档说不清这件事，而自检本身仍然有效
+# ——代码与其它文档正文照旧零容忍。
+ABBREV_ALLOWED_FILES = {"provenance.md", "history.md", "handoff.md",
+                        "check_independence.py"}
+
+_ABBREV_SUFFIXES = (".py", ".sqf", ".bat", ".cfg", ".json", ".md")
+
+
+def check_borrowed_naming() -> list[str]:
+    """代码与文档正文里不得借用外部项目的名字作为标识符前缀。
+
+    匹配 `<缩写>_`（前面不能再是字母，避免 `malc_x` 这类误报）。
+    大小写不敏感：`ALC_ENGINE_READ` 与 `alc_engine_read` 同样算借用。
+    """
+    problems = []
+    for root, dirs, files in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "build")]
+        for name in files:
+            if not name.endswith(_ABBREV_SUFFIXES):
+                continue
+            if name in ABBREV_ALLOWED_FILES:
+                continue
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, REPO)
+            try:
+                text = open(path, encoding="utf-8").read()
+            except (UnicodeDecodeError, OSError):
+                continue
+            for other, abbr in OTHER_REPO_ABBREVS.items():
+                for lineno, line in enumerate(text.splitlines(), 1):
+                    if re.search(r"(?<![A-Za-z])%s_" % re.escape(abbr), line,
+                                 re.IGNORECASE):
+                        problems.append(
+                            f"{rel}:{lineno} 借用了 {other} 的名字作为标识符："
+                            f"{line.strip()[:80]}")
+    return problems
+
+
 def check_hardcoded_paths() -> list[str]:
     """不允许把仓库外的绝对路径写进**运行期**代码。
 
@@ -137,6 +190,60 @@ def check_hardcoded_paths() -> list[str]:
                     if target.startswith("<repo>"):
                         continue   # 自己仓库内的路径不算外部依赖
                     problems.append(f"{rel}:{lineno} 硬编码外部路径 {target}")
+    return problems
+
+
+# 启动脚本里的**本仓库**绝对路径 —— 另一种独立性缺陷，且性质不同。
+#
+# check_hardcoded_paths 查的是"指向别的仓库"，查不到这里：`<repo>`
+# 指的正是自己，所以它不算外部依赖，却让仓库一旦被搬动/改名，脚本就在别的机器上
+# 静默找不到自己的文件。用 `%~dp0` 自定位可以完全消除这一项。
+#
+# 游戏安装路径（Steam 库）与解释器路径**不在检查范围**：它们无法从仓库位置推导，
+# 只能手工编辑，属于已声明的本机配置。
+_BAT_PATH_RE = re.compile(r"[A-Za-z]:[\\/]([A-Za-z0-9_.\-\\/ ]+)")
+_BAT_SELF_REPO_SEGMENT = re.compile(
+    r"arma3-mcp", re.IGNORECASE)
+
+
+def bat_files() -> list[str]:
+    """被 git 跟踪的 .bat 文件。
+
+    用 git 而不是遍历目录：`build/` 被 .gitignore 忽略、内容是本地生成的
+    一次性脚本，不参与交付，约束它们只会制造假警报。git 不可用时返回空列表
+    （这项检查随之跳过，而不是让整个自检失败）。
+    """
+    try:
+        proc = subprocess.run(["git", "ls-files", "*.bat"], cwd=REPO,
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if proc.returncode != 0:
+        return []
+    return [os.path.join(REPO, line.strip()) for line in proc.stdout.splitlines()
+            if line.strip()]
+
+
+def check_bat_self_location() -> list[str]:
+    """启动用的 .bat 不得硬编码本仓库路径——它必须自己定位。"""
+    problems = []
+    for path in bat_files():
+        rel = os.path.relpath(path, REPO)
+        if not os.path.exists(path):
+            continue
+        try:
+            text = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if stripped.lower().startswith("rem "):
+                continue          # 注释里提到旧路径不构成行为依赖
+            for match in _BAT_PATH_RE.finditer(line):
+                if _BAT_SELF_REPO_SEGMENT.search(match.group(1)):
+                    problems.append(
+                        f"{rel}:{lineno} 硬编码了本仓库的绝对路径："
+                        f"{match.group(0)[:60]}（应改用 %~dp0 自定位）")
     return problems
 
 
@@ -242,9 +349,27 @@ def main() -> int:
     print(f"  {'✓ 未发现引用' if not refs else f'✗ {len(refs)} 处引用'}")
 
     print("\n[2/5] 检查硬编码的外部路径 …")
+    borrowed = check_borrowed_naming()
+    if borrowed:
+        print("  ✗ 借用了外部项目的命名：")
+        for p in borrowed[:10]:
+            print(f"      {p}")
+        failures += borrowed
+    else:
+        print("  ✓ 命名独立（未借用外部项目的名字）")
+
     paths = check_hardcoded_paths()
     failures += paths
     print(f"  {'✓ 未发现越界路径' if not paths else f'✗ {len(paths)} 处'}")
+
+    selfloc = check_bat_self_location()
+    failures += selfloc
+    if selfloc:
+        print("  ✗ 启动脚本硬编码了本仓库路径：")
+        for p in selfloc[:10]:
+            print(f"      {p}")
+    else:
+        print(f"  ✓ 启动脚本自定位（{len(bat_files())} 个 .bat 用 %~dp0）")
 
     print("\n[3/5] 检查依赖是否只有标准库 …")
     imports = check_no_external_imports()

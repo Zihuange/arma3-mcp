@@ -17,9 +17,12 @@ Windows 侧运行（与游戏同网络栈），只能由**用户手动启动**�
 该网关地址就是 Windows 上 `vEthernet (WSL)` 网卡的 IPv4。
 本脚本启动监听后自动探测并打印它，省掉手工查 IP 的来回。
 
-用法（在 Windows 命令行 / PowerShell 里）：
-    <repo>\\serve_http.py            # 默认端口 32124
-    H:\\...\\serve_http.py --port 32124 --verbose
+用法（在 Windows 命令行 / PowerShell 里，于仓库根目录下）：
+    python serve_http.py                     # 默认端口 32124
+    python serve_http.py --port 32124 --verbose
+
+或直接双击 `start_windows.bat`：它自己定位仓库根目录，并已设好输入注入开关。
+本脚本不使用任何仓库外路径——`HERE` 由 `__file__` 推出，仓库可以任意搬动。
 """
 
 import argparse
@@ -94,7 +97,7 @@ def main() -> int:
 
     # 审计默认落盘：不设的话 guard.audit() 拿不到路径，审计会**静默失效**
     # （P1 起这是安全要求：谁在什么时候动了什么，必须可追溯）
-    os.environ.setdefault("ALC_AUDIT_LOG", os.path.join(HERE, "audit.jsonl"))
+    os.environ.setdefault("A3MCP_AUDIT_LOG", os.path.join(HERE, "audit.jsonl"))
 
     from adapters.tcp_channel import TcpChannel
     from mcpcore.http_transport import build_http_server, MCP_PATH, HEALTH_PATH
@@ -143,9 +146,9 @@ def main() -> int:
         print("    （DLL 默认就连这里；等它连上后 exec/config_* 才可用）")
     else:
         print("  游戏连接   : 未开启（config 查询与 exec 将报「未接通」）")
-    print("  审计日志   : %s" % os.environ.get("ALC_AUDIT_LOG", "(未设置)"))
+    print("  审计日志   : %s" % os.environ.get("A3MCP_AUDIT_LOG", "(未设置)"))
     print("  运行环境   : %s" % sys.version.split()[0])
-    print("  闸门配置   : 环境变量 ALC_ENGINE_WRITE 等（见 docs/deploy.md）")
+    print("  闸门配置   : 环境变量 A3MCP_ENGINE_WRITE 等（见 docs/deploy.md）")
     print("  停止       : Ctrl+C")
     print("=" * 66)
     sys.stdout.flush()
