@@ -242,3 +242,17 @@ MCP 服务    : 未运行（启动方式：python start.py  或  start_windows.b
    一律返回空，所以菜单项能"读到代码"，但无法与运行时控件一一对上。
 3. **改 SQF 必须重启游戏**：CfgFunctions 的函数是 `compileFinal`，运行时
    `setVariable` 覆盖会被拒（`Attempt to override final function`）。
+
+## 七、2026-10-23：任务世界快照（D42）
+
+- 新增五个工具：`player_state` / `scene_snapshot` / `squad_state` /
+  `mission_snapshot` / `map_snapshot`，模组侧是 `a3mcp_fnc_sceneQuery`
+  （op：`player` / `scene` / `squad` / `mission` / `map`）。
+- 全部在 Eden 预览里现造场景验过：玩家+2 敌兵+1 载具+标记+触发器，五个工具
+  都返回预期内容。
+- 修正一处**命令库与引擎不一致**：`simpleTasks` 库里有、引擎编译不过，
+  原生任务改用 `player allDiaryRecords "<主题>"` 读取。
+- `fn_init` 的 `params` 去掉类型约束（XEH 入口传的是字符串）。
+
+**仍未验证**：真实任务里的任务/日记条目（本次预览没有建任务）；MP 形态下的
+`player`（专用服务器上按设计直接拒绝）。

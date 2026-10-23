@@ -1398,3 +1398,72 @@ SQF 都必须重启游戏才能验；"热替换"这条路不通。
 本来该记 0 的项。改成 `[ \t]*` 后数字才对上。**这类错误的形状是"看起来完全
 正常"**：没有异常、没有空值、表格照常打印，只有和另一种途径（真机
 `buttonAction`）交叉验证才会露馅。所以 D41 里的数字都同时有两种来源。
+
+---
+
+## D42 任务世界快照：五个工具，以及"命令库里有、引擎不认"的第一例
+
+任务里最常问的五件事各自需要一个快照：**周围有什么 / 我是谁 / 任务是什么 /
+小队怎么样 / 地图上有什么**。它们和 `ui_snapshot` 是同一类东西——一次遍历、
+一次回执、按字节分页，理由见 D41（400 字符表达式、无局部变量、全量枚举）。
+
+| 工具 | 游戏侧 op | 记录形状 |
+|---|---|---|
+| `player_state` | `sceneQuery player` | 一行一个 `key=value` |
+| `scene_snapshot` | `sceneQuery scene 半径 上限 偏移` | `kind|类名|显示名|阵营|距离|存活|伤害|名字|载具|x|y|z` |
+| `squad_state` | `sceneQuery squad` | 头部 `key=value` + `member|…` + `waypoint|…` |
+| `mission_snapshot` | `sceneQuery mission` | 头部 `key=value` + `diary|主题|标题|正文` |
+| `map_snapshot` | `sceneQuery map 上限 偏移` | `marker|…` 与 `trigger|…` |
+
+真机验收（Eden 预览里现造场景）：玩家 `B_Soldier_F` + 2 名敌兵 + 1 辆
+`B_MRAP_01_F` + 1 个标记 + 1 个触发器，五个工具全部返回预期内容；
+`scene_snapshot` 候选 4 个、距离 0.0–10.6 m，`map_snapshot` 标记与触发器各 1。
+
+### 坑一：`simpleTasks` 在命令库里，引擎却不认
+
+第一版 `mission_snapshot` 用 `simpleTasks` 枚举原生任务——命令库里有它（来源
+core），但真机上**整份文件编译不过**：
+
+```
+Error in expression <private _tasks = simpleTasks;>
+  Error 表达式中的数字无效
+```
+
+引擎把 `simpleTasks` 当成不存在的标识符，报的却是"表达式中的数字无效"这个
+看着毫不相干的错误。**教训：命令库来自 BI wiki，不等于这个引擎版本实现了它。**
+凡是"库里有、但不确定版本"的命令，落地前必须先在真机上编译一次（`exec` 一条
+含该命令的最小表达式，1 秒出结论）。这和 D35 的"类名靠猜"是同一类错误的两个面。
+
+替代口径：原生任务挂在**日记**里，入口是 `player allDiaryRecords "Tasks"`。
+`mission_snapshot` 因此按 `Tasks/Diary/Briefing/Intel` 四个主题枚举，每条回
+`diary|主题|标题|正文`。
+
+### 坑二：对非人对象取 `name` 会得到字符串 `"Error: No unit"`
+
+`name` 只对 `Object` 里的人有意义；对载具调用它不返回空串，而是返回字面量
+`"Error: No unit"`——它会被当成"名字"一路显示出来，看起来像程序出错。
+`scene_snapshot` 现在按 `kind` 分流：只有 `U` 才取 `name`。
+
+### 坑三：`fn_init` 带了类型约束的 `params` 会被 XEH 打断
+
+RPT 里有一条 `Params: 类型 字符串，预期为 数字`（`fn_init.sqf` 的
+`params [["_pollDelay", 0.1, [0]]]`）。原因是这个函数有**三个入口**：
+CfgFunctions 的 preInit/postInit、CBA 的 XEH、命令行的 `-init=`——XEH 那条路
+传进来的 `_this` 是字符串，`[0]` 约束直接把它拒掉、函数中止。
+改成先取默认值再校验（`if (!(_pollDelay isEqualType 0)) ...`），三个入口都安全。
+
+### 工具链收获：SQFLint 有一次性 CLI
+
+此前一直以为 SQFLint 只能在 VSCode 里用。实际上扩展自带的 jar 支持单文件模式：
+
+```
+java -jar SQFLint.jar -oc <文件>
+```
+
+`-oc` 让它遇到错误时返回非零退出码，可以直接接进脚本。注意它**抓不到**
+"命令不存在"这类错误（上面的 `simpleTasks` 它一声不响），那只能靠真机编译。
+
+另外记一笔：把**多行 SQF 文本**经 `exec` 送进游戏再用 `compile` 检查这条路
+不成立——带 `//` 注释的文本必报"表达式中的数字无效"（传输环节的引号/转义问题），
+要拿它当离线编译器，必须先剥掉注释（`/* */` 同样要剥）。这个办法仍有用：
+剥掉注释后整份文件编译通过，就说明没有语法/未定义命令问题。

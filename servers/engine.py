@@ -25,7 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import adapters                                          # noqa: E402
 from adapters import (config_tools, control_tools, exec_tools,  # noqa: E402
-                      input_tools, ui_tools)
+                      input_tools, scene_tools, ui_tools)
 from guard import Gates                                  # noqa: E402
 from knowledge.capabilities import default_matrix        # noqa: E402
 from knowledge.index import default_index                # noqa: E402
@@ -93,6 +93,8 @@ def build_registry(channel=None) -> Registry:
     config_tools.register(reg, chan, config_tools.ConfigTools(chan))
     # UI 定位：把控件位置换算成可点击的屏幕坐标（P2 的坐标校准）
     ui_tools.register(reg, chan)
+    # 任务世界快照：场景 / 自身 / 任务 / 小队 / 地图（模组侧一次遍历）
+    scene_tools.register(reg, chan)
     return reg
 
 

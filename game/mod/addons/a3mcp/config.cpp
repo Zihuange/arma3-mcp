@@ -74,6 +74,7 @@ class CfgFunctions {
             class configQuery {};
             class configOfEntity {};
             class uiQuery {};
+            class sceneQuery {};
             class fnList {};
         };
     };

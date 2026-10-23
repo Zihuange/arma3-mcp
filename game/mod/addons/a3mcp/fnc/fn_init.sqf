@@ -7,7 +7,12 @@
 （callExtension）。所以循环周期决定了命令延迟的下限，取 0.1s ——
 比状态上报（5s）密得多，又不至于占用过多游戏逻辑线程时间。
 */
-params [["_pollDelay", 0.1, [0]]];
+// ⚠ 不加类型约束：这个函数被三个入口调用（CfgFunctions 的 preInit/postInit、
+// CBA 的 XEH、命令行的 -init=），传进来的 `_this` 不一定是数字 —— 实测 XEH
+// 那条路径给的是**字符串**，带 `[0]` 约束的 params 会直接报
+// "Params: 类型 字符串，预期为 数字" 并让整个函数中止。所以先取默认值再校验。
+params [["_pollDelay", 0.1]];
+if (!(_pollDelay isEqualType 0)) then { _pollDelay = 0.1; };
 
 if (missionNamespace getVariable ["A3MCP_STARTED", false]) exitWith {
     diag_log "[A3MCP] init 已在运行，忽略重复调用";
