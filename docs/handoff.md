@@ -217,3 +217,28 @@ MCP 服务    : 未运行（启动方式：python start.py  或  start_windows.b
    但**没有针对它的验证用例**——它的判据在 SQF 里，MCP 侧的测试覆盖不到。
    要补的话，思路同 `TestSqfCallTargetContract`：离线镜像它的判据。
 4. `docs/backlog.md` 里另有两条受阻项（视觉验证、下行队列上限）。
+
+## 六、2026-10-23：UI 能力面收口（D41）
+
+- **新增 `ui_snapshot`**（`mode = tree | actions | handlers`），模组侧
+  `a3mcp_fnc_uiQuery` 相应加了三个分支：
+  - `snapshot`：整棵控件树，按"100 条 + 12 KB 字节预算"分页，`next` 随回执返回；
+  - `actions`：只列按钮，回报运行时 `buttonAction` 的值；
+  - `handlers`：遍历某个 display 类的**整棵 config 子树**，取 `action` /
+    `onButtonClick` 文本。
+- **实测**：Eden 448 个控件一次取回，逐页累加与 `total` 完全一致（无截断）；
+  `Display3DEN` 的 config 里 **81 个类带处理器文本**（62 `action` +
+  19 `onButtonClick`，含 60 个菜单条项与 17 个右键菜单项），
+  `RscDisplayMain` 16 个。
+- **键的对应关系**：`actions` 的记录里带 display 的 config 类名，MCP 侧据此把
+  `handlers` 的结果按类名合表，所以"点了会执行什么"是一次调用的结论。
+
+**仍未闭合**：
+
+1. **同名类无法自动消歧**：主菜单有 21 个 `Button`、多个 `CollapseAllButton`，
+   合并时只能把多条 config 路径都列出来让人择一（真实运行时的 `buttonAction`
+   为空，没有别的判据）。
+2. **菜单项的 action 只存在于 config**：`menuAction [idc, path]` 对 Eden 菜单条
+   一律返回空，所以菜单项能"读到代码"，但无法与运行时控件一一对上。
+3. **改 SQF 必须重启游戏**：CfgFunctions 的函数是 `compileFinal`，运行时
+   `setVariable` 覆盖会被拒（`Attempt to override final function`）。

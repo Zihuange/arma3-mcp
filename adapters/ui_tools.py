@@ -406,3 +406,252 @@ def register(reg: Registry, chan) -> None:  # noqa: ANN001
         return ToolResult.ok("\n".join(lines),
                              {"scanned": scanned, "truncated": truncated,
                               "geometry": geom, "matches": refined})
+
+    # ------------------------------------------- 整棵树 / 可点元素 / 处理器文本
+    #
+    # 这三个查询都走模组函数 a3mcp_fnc_uiQuery 的新分页接口：**一次遍历、一次
+    # 往返**。此前 MCP 侧逐个 exec 读字段，成本正比于控件数的平方 —— 448 个
+    # 控件根本读不完，只能扫前 40 个。分页的理由见 fn_uiQuery.sqf 的头注释
+    # （DLL 上行单行 16 KB，超了是**静默截断**）。
+
+    def _uiquery(parts, timeout_s=25.0):
+        """发一条 uiQuery，返回 (原始负载, 错误)。"""
+        reply = chan.send({"cmd": "uiquery", "args": parts},
+                          timeout_s=timeout_s)
+        if not reply.ok:
+            return None, reply.error
+        return reply.result, ""
+
+    def _seg(payload, index):
+        """从 SQF 回的结构里取出第 index 段文本。"""
+        if isinstance(payload, dict):
+            payload = payload.get("v")
+        if not isinstance(payload, list) or len(payload) <= index:
+            return ""
+        seg = payload[index]
+        if isinstance(seg, dict):
+            seg = seg.get("v")
+        return seg if isinstance(seg, str) else ""
+
+    def _rows(text, nfields):
+        out = []
+        for line in (text or "").split("\n"):
+            if not line:
+                continue
+            parts = line.split("|")
+            if len(parts) < nfields:
+                continue
+            out.append(parts)
+        return out
+
+    def _counts(meta):
+        out = {}
+        for tok in (meta or "").split():
+            if "=" in tok:
+                k, v = tok.split("=", 1)
+                try:
+                    out[k] = int(v)
+                except ValueError:
+                    out[k] = v
+        return out
+
+    def _num(parts, i, default=0.0):
+        try:
+            return float(parts[i])
+        except (TypeError, ValueError):
+            return default
+
+    def _int(parts, i, default=0):
+        """整数容错解析。
+
+        SQF 的 `str` 对较大整数会输出**科学计数法**（实测某个控件的 idc 是
+        `6.9e+06`），直接 int() 会抛 ValueError 把整个工具打挂 —— 第一次跑
+        全量 tree 就是这么崩的。先按 int 解析，失败再走 float。
+        """
+        for conv in (int, float):
+            try:
+                return conv(parts[i])
+            except (TypeError, ValueError):
+                continue
+        return default
+
+    @reg.tool(
+        name="ui_snapshot",
+        description=(
+            "一次拿回**整棵控件树**（分页自动续取），或**所有按钮的执行代码**，"
+            "或某个 UI 类在 config 里的**事件处理器文本**。"
+            "mode=tree：每个控件一行（display/索引/类名/IDC/类型/启用/显示/"
+            "透明度/位置/文本）。mode=actions：只列按钮，并给出它点击后**真正"
+            "执行的代码**（运行时 buttonAction；为空时自动去 config 的 "
+            "onButtonClick 里找）。mode=handlers：读 config 里某个 display 类"
+            "整棵子树的 action/onButtonClick。"
+            "tree 的 screen 字段可直接喂给 input_click。"),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string",
+                         "enum": ["tree", "actions", "handlers"],
+                         "description": "默认 tree"},
+                "display": {"type": "integer",
+                            "description": "只保留某个 display 的控件（tree 用）"},
+                "max_records": {"type": "integer", "minimum": 1, "maximum": 2000,
+                                "description": "最多取多少条，默认 300。tree 会"
+                                               "自动分页直到取够或取完"},
+                "class_name": {"type": "string",
+                               "description": "handlers 用的 display config 类名，"
+                                              "如 Display3DEN / RscDisplayMain"},
+            },
+        },
+        phase="input",
+    )
+    def _snapshot(args):
+        mode = (args.get("mode") or "tree").lower()
+        want_display = args.get("display")
+        max_records = int(args.get("max_records") or 300)
+
+        if mode == "handlers":
+            cls = args.get("class_name") or ""
+            payload, err = _uiquery(["handlers", cls], timeout_s=25.0)
+            if payload is None:
+                return ToolResult.fail(
+                    "读 config 处理器失败：%s\n（这一步依赖模组函数 "
+                    "a3mcp_fnc_uiQuery 的 handlers 分支，需要装载新版 PBO）" % err)
+            meta = _counts(_seg(payload, 1))
+            recs = _rows(_seg(payload, 0), 3)
+            lines = ["%s 的处理器文本（遍历 %s 个节点，%d 个类带处理器）"
+                     % (meta.get("class", "?"), meta.get("nodes", "?"),
+                        len(recs)), ""]
+            for path, act, onclick in recs:
+                lines.append("  " + path)
+                if act:
+                    lines.append("    action        : %s" % act)
+                if onclick:
+                    lines.append("    onButtonClick : %s" % onclick)
+            if not recs:
+                lines.append("  （没有找到带 action / onButtonClick 的类）")
+            return ToolResult.ok("\n".join(lines), {"meta": meta, "records": recs})
+
+        if mode == "actions":
+            payload, err = _uiquery(["actions", 500, 0], timeout_s=25.0)
+            if payload is None:
+                return ToolResult.fail(
+                    "读按钮 action 失败：%s\n（需要装载含 actions 分支的新版 PBO）"
+                    % err)
+            meta = _counts(_seg(payload, 1))
+            recs = _rows(_seg(payload, 0), 6)
+            # config 侧的处理器：只有运行时 action 为空时才需要
+            handlers = {}
+            for dcls in sorted({r[1] for r in recs if r[1]}):
+                hp, herr = _uiquery(["handlers", dcls], timeout_s=25.0)
+                if hp is None:
+                    continue
+                table = {}
+                for path, act, onclick in _rows(_seg(hp, 0), 3):
+                    cls = path.rsplit("/", 1)[-1]
+                    table.setdefault(cls, []).append((path, act, onclick))
+                handlers[dcls] = table
+
+            lines = ["可点元素（按钮）共 %s 个；其中运行时 action 为空 %s 个 "
+                     "——空不等于不能点，它们的处理器在 config 的 onButtonClick 里。"
+                     % (meta.get("buttons", "?"), meta.get("emptyAction", "?")), ""]
+            out = []
+            for dIdx, dcls, idc, cls, text, act in recs:
+                dIdx = _int([dIdx], 0)
+                idc = _int([idc], 0, -1)
+                entry = {"display": dIdx, "display_class": dcls,
+                         "idc": idc, "class": cls, "text": text,
+                         "action": act, "handler": "", "handler_path": ""}
+                if not act:
+                    cands = handlers.get(dcls, {}).get(cls, [])
+                    if len(cands) == 1:
+                        entry["handler_path"], entry["handler"] = \
+                            cands[0][0], (cands[0][2] or cands[0][1])
+                    elif len(cands) > 1:
+                        entry["handler_path"] = " | ".join(c[0] for c in cands)
+                out.append(entry)
+                lines.append("  display=%s idc=%s %s" % (dIdx, idc, cls))
+                if text:
+                    lines.append("    文本   : %s" % text)
+                if act:
+                    lines.append("    执行   : %s   ← 运行时 buttonAction" % act)
+                elif entry["handler"]:
+                    lines.append("    执行   : %s   ← config onButtonClick"
+                                 % entry["handler"])
+                    lines.append("    路径   : %s" % entry["handler_path"])
+                elif entry["handler_path"]:
+                    lines.append("    执行   : （同名类有多个，需按路径择一）")
+                    lines.append("    路径   : %s" % entry["handler_path"])
+                else:
+                    lines.append("    执行   : （config 里也没有，引擎原生按钮）")
+            lines.append("")
+            lines.append("提示：action 是**代码字符串**，直接执行等价于点击；"
+                         "执行前建议先看清目标（例如 do3DENAction 会真的动作）。")
+            return ToolResult.ok("\n".join(lines),
+                                 {"meta": meta, "buttons": out,
+                                  "handlers": {k: {c: v for c, v in t.items()}
+                                               for k, t in handlers.items()}})
+
+        # ---- tree ----
+        geom = locator.window_geometry()
+        offset = 0
+        rows = []
+        meta = {}
+        display_lines = []
+        while True:
+            payload, err = _uiquery(["snapshot", 100, offset], timeout_s=25.0)
+            if payload is None:
+                return ToolResult.fail(
+                    "读控件树失败：%s\n（需要装载含 snapshot 分支的新版 PBO）" % err)
+            text = _seg(payload, 0)
+            meta = _counts(_seg(payload, 1))
+            if not display_lines:
+                display_lines = _seg(payload, 2).split("\n")
+            for parts in _rows(text, 13):
+                d = _int(parts, 0)
+                if want_display is not None and d != int(want_display):
+                    continue
+                rel = [_num(parts, i) for i in (8, 9, 10, 11)]
+                row = {"display": d, "index": _int(parts, 1),
+                       "class": parts[2], "idc": _int(parts, 3, -1),
+                       "type": _int(parts, 4),
+                       "enabled": parts[5] == "true",
+                       "shown": parts[6] == "true",
+                       "fade": _num(parts, 7),
+                       "rel": rel, "text": parts[12]}
+                if geom is not None:
+                    row["screen"] = list(to_screen(rel, geom))
+                rows.append(row)
+                if len(rows) >= max_records:
+                    break
+            nxt = meta.get("next", -1)
+            if len(rows) >= max_records or not isinstance(nxt, int) or nxt < 0:
+                break
+            offset = nxt
+
+        lines = ["控件树：共 %s 个控件（每 display 配额 100，自动续取）"
+                 % meta.get("total", "?"), ""]
+        for dl in display_lines:
+            if dl:
+                lines.append("  " + dl)
+        lines.append("")
+        for row in rows:
+            pos = ", ".join("%.3f" % v for v in row["rel"])
+            line = ("  d%d#%-3d %-22s idc=%-5d type=%-2d "
+                    % (row["display"], row["index"], row["class"], row["idc"],
+                       row["type"]))
+            if "screen" in row:
+                line += "屏幕(%d,%d) " % tuple(row["screen"])
+            line += "rel=[%s]" % pos
+            if not row["shown"]:
+                line += " [隐藏]"
+            if not row["enabled"]:
+                line += " [禁用]"
+            if row["text"]:
+                line += " text=%r" % row["text"][:40]
+            lines.append(line)
+        lines.append("")
+        lines.append("type 1=按钮（buttonAction 可用）；15=控件组（容器，"
+                     "子控件在其下）；其余为引擎控件类型。")
+        return ToolResult.ok("\n".join(lines),
+                             {"total": meta.get("total"), "count": len(rows),
+                              "displays": display_lines, "rows": rows})

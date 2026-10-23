@@ -1298,3 +1298,103 @@ if (!_skipValidate) then {
 使用者已明确"副作用自行处理"。文档（`safety.md`）里如实列出风险，
 并由使用者承担：本模式下 LLM 能做的等于操作者在这台机器上能做的。
 **不应在启用 BattlEye 的环境、共享机器或含敏感数据的桌面上开启。**
+
+---
+
+## D41 "UI 元素指向哪个功能"：config 才是主路，两种运行时 getter 只覆盖一小半
+
+这轮把 P2 遗留的那个问题问清楚了：**点了这个控件，到底会执行什么？**
+在 Eden 上逐项实测，结论和最初的假设不完全一样，而且我中途错过一次方向。
+
+### 一条链，四次取值，全在真机跑通
+
+以工具栏 Undo（display 1、索引 20）为例：
+
+| 步 | 表达式 | 结果 |
+|---|---|---|
+| 1 | `ctrlParent ctrl` → display | — |
+| 2 | `display getVariable ["BIS_fnc_initDisplay_configClass", ""]` | `"Display3DEN"` |
+| 3 | `ctrlClassName ctrl` / `ctrlIDC ctrl` | `"Undo"` / `1010` |
+| 4 | `buttonAction ctrl` | `"do3DENAction 'Undo';"` |
+
+第 4 步拿到的**就是可执行代码本身**，`do3DENAction` 的闸门分级是 `write`
+（放行）。也就是说"追到功能"之后直接执行等价于点击，不需要拦事件、不需要
+反编译。第 2、3 步是给**没有运行时 getter** 的那一半用的坐标。
+
+### 数量：config 里 97 个类带处理器文本
+
+用新接口 `ui_snapshot(mode=handlers)` 遍历整棵子树（不是只走 `controls` 一层）：
+
+| display | 遍历节点 | 带处理器的类 | 其中 `action` | 其中 `onButtonClick` |
+|---|---|---|---|---|
+| `Display3DEN` | 365 | **81** | 62 | 19 |
+| `RscDisplayMain` | 162 | **16** | 0 | 16 |
+
+`Display3DEN` 的 81 个里，64 个在 `Controls/`（含 60 个菜单条项）、17 个在
+`ContextMenu/`（右键菜单）。运行时 `buttonAction` 只对**真正的按钮控件**有效
+（Eden 里 32 个，主菜单里 54 个），但 config 侧的代码文本覆盖得更多。
+
+### 三条被证伪的假设
+
+1. **`buttonAction` 不是通用入口。** 它读的是 config 的 `action` 属性；
+   Eden 有一半按钮把代码写在 `onButtonClick` 里，`buttonAction` 对它们返回 `""`
+   （`ButtonExit` 就是这种，代码在 `onButtonClick = "do3DENAction '3DENExit';"`）。
+2. **`menuAction`（运行时）不可用，但菜单 config 里有 `action`。**
+   `MenuStrip` 控件（idc 120、`type=47`）的 `menuAction [idc, path]` 三个路径
+   全返回 `""`。我据此写下"菜单项 config 里连 action 都没有"——**这句是错的**：
+   当时只走了 `controls` 一层并跳过了 `Items` 子树，抽查的 `MissionNew` 恰好
+   是个没有 action 的项。走完 `MenuStrip/Items` 后看到 60 项里有 `action`
+   （如 `do3DENAction 'OpenSteamPublishDialog'`、`[] call bis_fnc_3DENExportSQF`），
+   `ContextMenu/Items` 的 17 项也都有。**教训：从一个样本推全局，且样本来自
+   被裁剪过的遍历，得到的结论会既错又像真的。**
+3. **uinamespace 派发表是空的。** `Display3DEN.onLoad` 的值是
+   `["onLoad",_this,"Display3DEN",'3DENDisplays'] call (uinamespace getvariable 'BIS_fnc_initDisplay')`，
+   看起来 dispatch 表在 `3DENDisplays` 里；实测
+   `count (uinamespace getVariable "3DENDisplays")` = **0**。这条路走不通。
+
+所以能追到底的只有三种元素：**带 `action` 的按钮**（运行时 getter + config 双份）、
+**带 `onButtonClick` 的按钮**（只有 config）、**菜单项**（只有 config，且要靠
+路径区分同名类）。其余控件（列表/树/滑条/复选/3D 视口）运行时没有 getter，
+`ctrlAddEventHandler` 只写不读，只能坐标点击。
+
+### 新接口：一次遍历、一次回执
+
+`a3mcp_fnc_uiQuery` 加三个分支（`snapshot` / `actions` / `handlers`），MCP 侧
+对应 `ui_snapshot` 工具。为什么不是"多调几次 exec"：
+
+- MCP 侧动态表达式**每条 400 字符上限**，一个控件要 4 次往返；
+- 每次 `ctrlClassName` 都重新全量求值 `allControls`，成本正比于控件数 —— 448 个
+  控件时 `ui_locate` 只扫得动前 40 个（D25/D26 的老问题）；
+- 而"整棵树一次回"又受 DLL 的**上行单行 16 KB**限制（`kMaxLineOut`）：Eden 一个
+  display 就有 304 个控件，整棵树约 50 KB，超出的部分会被**静默截断**。
+
+于是 `snapshot` 用"条数配额 + 12 KB 字节预算"双保险分页，`next` 随回执返回，
+MCP 侧自动续取（实测一次取回 448 行、与 `total` 完全一致，未截断）。
+`actions` 的记录里带 display 的 config 类名，MCP 侧据此把 `handlers` 的结果
+按类名合表 —— "这个按钮点击后执行什么"因此是一次调用的结论。
+
+### 这一轮踩到的三个坑（都是"改对了才看得出来"）
+
+1. **`[_fn, [参数]] call _fn` 是错的调用形态。** 正确写法是 `[参数] call _fn`。
+   前者把函数自己当成第一个参数，`params` 的类型校验把整个入参拒掉、变量取默认值，
+   函数**静默返回空串**——现象是"所有 onButtonClick 都读成空"，没有一行报错。
+2. **`configClasses` 是双参数命令**：`condition configClasses config`。写单参数
+   报 `类型 Config entry，预期为 数组`。同一个坑 `fn_configQuery.sqf` 里已经记过。
+3. **SQF 的 `str` 对大整数会输出科学计数法**（实测某控件 idc 变成 `6.9e+06`），
+   MCP 侧直接 `int()` 解析会把工具打挂。数字解析必须容错（先 int 再 float）。
+
+另外一条影响开发节奏：**CfgFunctions 的函数是 `compileFinal`，运行时覆盖会被拒**
+（RPT: `Attempt to override final function - a3mcp_fnc_uiquery`），所以每改一次
+SQF 都必须重启游戏才能验；"热替换"这条路不通。
+
+### 一个把数字算错的教训：`\s*` 吞了换行
+
+用 `config_value` 读属性时，我的解析正则写成 `^\s*键\s*=\s*(.*)$`。当属性
+**存在但为空**时，输出是 `  onButtonClick = `（行尾什么都没有），而 `\s`
+在 Python 里**包含换行** —— 于是 `(.*)` 吃到了下一行的 `text = ...`，
+"空值"被当成了"值为下一行"。
+
+后果：`Display3DEN` 的 `onButtonClick` 从 19 虚高到 33，且虚高的那些恰好是
+本来该记 0 的项。改成 `[ \t]*` 后数字才对上。**这类错误的形状是"看起来完全
+正常"**：没有异常、没有空值、表格照常打印，只有和另一种途径（真机
+`buttonAction`）交叉验证才会露馅。所以 D41 里的数字都同时有两种来源。

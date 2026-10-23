@@ -6,7 +6,7 @@
   exec            动态表达式（经 fn_validate 词法校验后用 compile 执行）
   configQuery     读取游戏内 config 树
   configOfEntity  从实体跳到它的 config
-  uiQuery         界面控件查询（列类名 / 按类名找控件）
+  uiQuery         界面控件查询（列类名 / 按类名找 / 整树快照 / 按钮 action）
   fnList          从 CfgFunctions 拼出可调用的函数名（call 的目标核对）
 
 安全要点：表达式**必须**过 fn_validate 才允许编译。这里是第二道校验——
